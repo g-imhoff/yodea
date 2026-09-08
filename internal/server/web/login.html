@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>yodea login</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:22rem;margin:4rem auto;padding:0 1rem}
+input{display:block;width:100%;margin:.5rem 0;padding:.5rem;box-sizing:border-box}
+button{padding:.5rem 1rem;cursor:pointer}
+.err{color:#a00;min-height:1.2em}
+</style>
+</head>
+<body>
+<h1>yodea</h1>
+<p>Team login. Invited accounts only.</p>
+<form id="f">
+<input id="email" type="email" autocomplete="username" placeholder="email" required>
+<input id="password" type="password" autocomplete="current-password" placeholder="password" required>
+<p class="err" id="err"></p>
+<button>Log in</button>
+</form>
+<script>
+const next = new URLSearchParams(location.search).get("next") || "/";
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = document.getElementById("err");
+  err.textContent = "";
+  const res = await fetch("/api/session", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      email: document.getElementById("email").value,
+      password: document.getElementById("password").value,
+    }),
+  });
+  if (!res.ok) { err.textContent = "Login failed. Check email and password."; return; }
+  location.href = next;
+});
+</script>
+</body>
+</html>
