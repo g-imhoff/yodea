@@ -37,6 +37,83 @@ func TestSupabaseStoreScopesCalls(t *testing.T) {
 	}
 }
 
+// Zero-row RLS guard: a DELETE that affects no rows (RLS denial or
+// concurrent delete) must surface as nil so the handler does not delete
+// files on a no-op.
+func TestSupabaseDeleteZeroRowsReturnsNil(t *testing.T) {
+	var sawDeletePrefer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[{"label":"alice-blog","user_id":"alice","project":"blog","files":1,"bytes":2}]`))
+			return
+		}
+		if r.Method == http.MethodDelete {
+			sawDeletePrefer = r.Header.Get("Prefer")
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	s := NewSupabaseStore(srv.URL, "server-key")
+	if got := s.DeleteSite("viewer-jwt", "alice", "blog"); got != nil {
+		t.Fatalf("DeleteSite on 0-row delete = %+v, want nil (no file cleanup)", got)
+	}
+	if sawDeletePrefer != "return=representation" {
+		t.Fatalf("DELETE Prefer = %q, want return=representation", sawDeletePrefer)
+	}
+}
+
+func TestSupabaseUpsertRejectsTakenLabelWithoutWriting(t *testing.T) {
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[{"label":"shared","user_id":"alice","project":"a","files":1,"bytes":2}]`))
+			return
+		}
+		if r.Method == http.MethodPost {
+			posts++
+			_, _ = w.Write([]byte(`[{"label":"shared","user_id":"bob","project":"b"}]`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	s := NewSupabaseStore(srv.URL, "server-key")
+	err := s.UpsertSite("viewer-jwt", &Site{UserID: "bob", Project: "b", Label: "shared"})
+	if err == nil || !strings.Contains(err.Error(), "label is taken") {
+		t.Fatalf("UpsertSite on taken label = %v, want label-taken error", err)
+	}
+	if posts != 0 {
+		t.Fatalf("UpsertSite wrote %d POSTs after label-taken pre-check, want 0", posts)
+	}
+}
+
+func TestSupabaseUpsertRequiresRows(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		if r.Method == http.MethodPost {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	s := NewSupabaseStore(srv.URL, "server-key")
+	if err := s.UpsertSite("viewer-jwt", &Site{UserID: "alice", Project: "blog", Label: "alice-blog"}); err == nil {
+		t.Fatal("UpsertSite with empty upsert response = nil, want error")
+	}
+}
+
 func TestSupabaseStoreFavoriteRoundTrip(t *testing.T) {
 	var bodies []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

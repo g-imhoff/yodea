@@ -132,10 +132,15 @@ func eq(col, val string) string {
 	return v.Encode()
 }
 
-// UpsertSite records a deploy keyed by label.
+// UpsertSite records a deploy keyed by label. A label owned by another
+// user is rejected before writing (mirrors Store's label-taken rule);
+// an upsert that returns no rows (RLS denial) is an error.
 func (s *SupabaseStore) UpsertSite(token string, site *Site) error {
 	if site.Label == "" || site.UserID == "" || site.Project == "" {
 		return fmt.Errorf("label, user, and project are required")
+	}
+	if existing := s.SiteByLabel(token, site.Label); existing != nil && existing.UserID != site.UserID {
+		return fmt.Errorf("label is taken")
 	}
 	site.UpdatedAt = time.Now().UTC()
 	body := map[string]any{
@@ -153,7 +158,13 @@ func (s *SupabaseStore) UpsertSite(token string, site *Site) error {
 	}
 	req.Header.Set("Prefer", "resolution=merge-duplicates,return=representation")
 	var out []Site
-	return s.do(req, &out)
+	if err := s.do(req, &out); err != nil {
+		return err
+	}
+	if len(out) == 0 {
+		return fmt.Errorf("supabase upsert returned no rows")
+	}
+	return nil
 }
 
 // SiteByLabel returns the site for a preview label, or nil. Any logged-in
@@ -188,7 +199,9 @@ func (s *SupabaseStore) ListSites(token, userID string) []*Site {
 
 // DeleteSite removes one user's project metadata and returns the removed
 // row for disk cleanup. Orphaned favorite rows from other viewers are left
-// to read-time filtering (see package note).
+// to read-time filtering (see package note). The DELETE requests its
+// representation and returns nil on zero rows (RLS denial or concurrent
+// delete) so the handler skips file cleanup on a no-op.
 func (s *SupabaseStore) DeleteSite(token, userID, project string) *Site {
 	v := url.Values{}
 	v.Set("user_id", "eq."+userID)
@@ -206,7 +219,9 @@ func (s *SupabaseStore) DeleteSite(token, userID, project string) *Site {
 	if err != nil {
 		return nil
 	}
-	if err := s.do(del, nil); err != nil {
+	del.Header.Set("Prefer", "return=representation")
+	var deleted []Site
+	if err := s.do(del, &deleted); err != nil || len(deleted) == 0 {
 		return nil
 	}
 	return &site

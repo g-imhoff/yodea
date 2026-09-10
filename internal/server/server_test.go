@@ -433,6 +433,26 @@ func TestDeployRejectsDotfile(t *testing.T) {
 	}
 }
 
+func TestValidProjectRejectsBlankDotOnlyAndFallback(t *testing.T) {
+	for _, raw := range []string{"", "   ", ".", "..", "...", "---", "!!!", "___", " - ", "??"} {
+		t.Run("reject/"+raw, func(t *testing.T) {
+			if validProject(raw) {
+				t.Fatalf("validProject(%q) = true, want false", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"site", "blog", "my-app", "a1", "my.project"} {
+		t.Run("accept/"+raw, func(t *testing.T) {
+			if !validProject(raw) {
+				t.Fatalf("validProject(%q) = false, want true", raw)
+			}
+		})
+	}
+	if validProject("Site") {
+		t.Fatal("validProject(Site) = true, want false (sanitizes to reserved site)")
+	}
+}
+
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

@@ -197,6 +197,61 @@ func TestScaffoldNeverOverwritesUserFiles(t *testing.T) {
 	}
 }
 
+func TestScaffoldForceOverwritesOwnedConfig(t *testing.T) {
+	isolateSession(t)
+	dir := t.TempDir()
+	stale := filepath.Join(dir, ConfigFile)
+	if err := os.WriteFile(stale, []byte("{\"project\": \"stale\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(dir, "src", "App.tsx")
+	if err := os.MkdirAll(filepath.Dir(keep), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keep, []byte("mine"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Scaffold(dir, "newproj", true); err != nil {
+		t.Fatalf("Scaffold --force: %v", err)
+	}
+	data, err := os.ReadFile(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "{\"project\": \"newproj\"}\n" {
+		t.Fatalf("Scaffold --force kept stale yodea.json, got %q want new project", string(data))
+	}
+	kept, err := os.ReadFile(keep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(kept) != "mine" {
+		t.Fatalf("Scaffold --force overwrote user file, got %q", string(kept))
+	}
+}
+
+func TestCheckProjectRejectsBlankDotOnlyAndFallback(t *testing.T) {
+	isolateSession(t)
+	for _, raw := range []string{"", "   ", ".", "..", "...", "---", "!!!", "___", " - ", "??"} {
+		t.Run("reject/"+raw, func(t *testing.T) {
+			if err := CheckProject(raw); err == nil {
+				t.Fatalf("CheckProject(%q) = nil, want error", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"site", "blog", "my-app", "a1", "my.project"} {
+		t.Run("accept/"+raw, func(t *testing.T) {
+			if err := CheckProject(raw); err != nil {
+				t.Fatalf("CheckProject(%q) = %v, want nil", raw, err)
+			}
+		})
+	}
+	// Case-variant still sanitizes to the reserved fallback.
+	if err := CheckProject("Site"); err == nil {
+		t.Fatal("CheckProject(Site) = nil, want error (sanitizes to reserved site)")
+	}
+}
+
 func TestPushFastFailsNonReactTS(t *testing.T) {
 	isolateSession(t)
 	dir := t.TempDir() // no package.json, no vite config
