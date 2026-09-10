@@ -62,3 +62,12 @@ create policy "favorites_owner_all" on public.favorites
 -- operator or scheduled job purge them with the service key.
 -- delete from public.favorites f where not exists
 --   (select 1 from public.sites s where s.label = f.label);
+
+-- Grants: RLS policies alone grant nothing without table/sequence
+-- privileges. The authenticated role needs DML on all three tables so its
+-- owner plus preview-read policies are usable live, plus sequence usage for
+-- the site_views identity column on inserts.
+grant select, insert, update, delete on public.sites to authenticated;
+grant select, insert, update, delete on public.site_views to authenticated;
+grant select, insert, update, delete on public.favorites to authenticated;
+grant usage, select on sequence public.site_views_id_seq to authenticated;

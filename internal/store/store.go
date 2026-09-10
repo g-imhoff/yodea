@@ -143,23 +143,30 @@ func (s *Store) UpsertSite(_ string, site *Site) error {
 	return s.save()
 }
 
-// SiteByLabel returns the site for a preview hostname label, or nil.
-// Any logged-in viewer may read any label: this is the preview path.
+// SiteByLabel returns a copy of the site for a preview hostname label,
+// or nil. Any logged-in viewer may read any label: this is the preview
+// path. Copies are returned so callers cannot mutate internal state.
 func (s *Store) SiteByLabel(_, label string) *Site {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.d.Sites[label]
+	if site, ok := s.d.Sites[label]; ok {
+		cp := *site
+		return &cp
+	}
+	return nil
 }
 
-// ListSites returns one user's sites newest first. It never includes other
-// users' rows.
+// ListSites returns copies of one user's sites newest first. It never
+// includes other users' rows. Each struct is copied and the slice is fresh
+// so callers cannot alias or mutate internal state.
 func (s *Store) ListSites(_, userID string) []*Site {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []*Site
 	for _, site := range s.d.Sites {
 		if site.UserID == userID {
-			out = append(out, site)
+			cp := *site
+			out = append(out, &cp)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })

@@ -164,20 +164,14 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 			return nil, fmt.Errorf("rejected escape %q", hdr.Name)
 		}
-		// Skip dotfiles and dot-directories: dist/ never needs them and
-		// they hide secrets like .env that must not be served.
-		skip := false
+		// Dotfiles and dot-directories are rejected: the brief requires
+		// deploys to REJECT dotfiles (400) rather than silently skipping,
+		// and dist/ never needs them; they hide secrets like .env that
+		// must not be served.
 		for _, part := range strings.Split(clean, string(filepath.Separator)) {
 			if strings.HasPrefix(part, ".") {
-				skip = true
-				break
+				return nil, fmt.Errorf("rejected dotfile %q", hdr.Name)
 			}
-		}
-		if skip {
-			if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
-				_, _ = io.Copy(io.Discard, io.LimitReader(tr, MaxSingleFileBytes+1))
-			}
-			continue
 		}
 		target := filepath.Join(staging, clean)
 		if !strings.HasPrefix(target, staging+string(filepath.Separator)) && target != staging {
@@ -288,7 +282,6 @@ func PackDir(srcDir string, w io.Writer) (int, error) {
 		if err != nil {
 			return err
 		}
-		defer f.Close()
 		hdr := &tar.Header{
 			Name:    filepath.ToSlash(rel),
 			Mode:    0o644,
@@ -297,10 +290,16 @@ func PackDir(srcDir string, w io.Writer) (int, error) {
 			Format:  tar.FormatPAX,
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
+			_ = f.Close()
 			return err
 		}
-		if _, err := io.Copy(tw, f); err != nil {
-			return err
+		_, copyErr := io.Copy(tw, f)
+		closeErr := f.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
 		}
 		count++
 		if count > MaxFiles {

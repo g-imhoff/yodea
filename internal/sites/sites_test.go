@@ -99,6 +99,36 @@ func TestExtractDistRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestExtractDistRejectsDotfiles(t *testing.T) {
+	arc := pack(t, []entry{{name: "index.html", body: "ok"}, {name: ".env", body: "secret"}})
+	_, err := ExtractDist(arc, filepath.Join(t.TempDir(), "lbl"), 0, 0)
+	if err == nil {
+		t.Fatal("want dotfile rejection, got nil")
+	}
+	arc2 := pack(t, []entry{{name: "index.html", body: "ok"}, {name: ".git/config", body: "x"}})
+	_, err = ExtractDist(arc2, filepath.Join(t.TempDir(), "lbl2"), 0, 0)
+	if err == nil {
+		t.Fatal("want dot-directory rejection, got nil")
+	}
+}
+
+func TestExtractDistRejectsDevicesAndFifos(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag byte
+	}{
+		{"devnode", tar.TypeChar},
+		{"blocknode", tar.TypeBlock},
+		{"apipe", tar.TypeFifo},
+	} {
+		arc := pack(t, []entry{{name: "index.html", body: "ok"}, {name: tc.name, body: "", flag: tc.flag}})
+		_, err := ExtractDist(arc, filepath.Join(t.TempDir(), "lbl"), 0, 0)
+		if err == nil || !strings.Contains(err.Error(), "non-regular") {
+			t.Fatalf("%s (type %c): want non-regular rejection, got %v", tc.name, tc.flag, err)
+		}
+	}
+}
+
 func TestValidateLabel(t *testing.T) {
 	for _, bad := range []string{"", "-abc", "abc-", "ABC", "a_b", "a.b", strings.Repeat("a", 64)} {
 		if err := ValidateLabel(bad); err == nil {

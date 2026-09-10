@@ -9,7 +9,9 @@
 //
 // Sandbox model: uploaded code is static data only and is never executed by
 // this server. Preview reads deny dot segments and traversal before touching
-// disk, send nosniff plus conservative MIME types, and fall back to
+// disk, send nosniff plus conservative MIME types, sandbox allow-scripts
+// (no allow-same-origin) plus X-Frame-Options DENY so sibling previews under
+// the shared parent domain stay opaque and unframeable, and fall back to
 // index.html only for extensionless navigations so missing assets stay
 // visible 404s. Session cookies are HttpOnly plus SameSite=Lax so preview
 // JavaScript cannot read them.
@@ -28,6 +30,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -288,6 +291,20 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.DevNoAuth {
+		// Preserve per-viewer identity when the caller still presents
+		// its access token (Bearer or session cookie). Without any
+		// access token there is no identity to keep: documented
+		// fallback is the generic "dev" user (see
+		// TestDevRefreshPreservesViewerIdentity).
+		if _, userID, err := s.tokenFor(r); err == nil {
+			tok := "dev"
+			if userID != "dev-user" {
+				tok = "dev:" + userID
+			}
+			s.setSessionCookies(w, tok, 3600, "")
+			writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600})
+			return
+		}
 		s.setSessionCookies(w, "dev", 3600, "")
 		writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600})
 		return
@@ -309,6 +326,20 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
+	}
+	// Best-effort server-side revocation before clearing cookies. Skipped
+	// in DevNoAuth (no IdP); errors are ignored because cookie clearing is
+	// what actually signs the browser out.
+	if !s.cfg.DevNoAuth && s.authc != nil {
+		var token string
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token = strings.TrimPrefix(h, "Bearer ")
+		} else if c, cerr := r.Cookie("yodea_session"); cerr == nil {
+			token = c.Value
+		}
+		if token != "" {
+			s.authc.Logout(token)
+		}
 	}
 	domain := "." + s.cfg.BaseDomain
 	for _, c := range []*http.Cookie{
@@ -623,9 +654,11 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 }
 
 // safeNext mirrors the dashboard's allowlist: a relative central path with
-// a single leading slash, or an https URL on the central host or one of its
-// preview subdomains. Anything else falls back to "/" so a crafted
-// ?next= can never bounce a fresh login to an attacker site.
+// a single leading slash, or an https URL on the central host only.
+// Preview-subdomain targets are rejected (fall back to "/") so a crafted
+// ?next= can never bounce a fresh login into attacker-controlled preview
+// content; the login page then strips the value and redirects to bare
+// /login. Anything else falls back to "/" for the same reason.
 func (s *Server) safeNext(raw string) string {
 	if raw == "" {
 		return "/"
@@ -638,7 +671,7 @@ func (s *Server) safeNext(raw string) string {
 		if i := strings.IndexAny(host, "/?#"); i >= 0 {
 			host = host[:i]
 		}
-		if h := strings.ToLower(host); h == s.cfg.BaseDomain || strings.HasSuffix(h, "."+s.cfg.BaseDomain) {
+		if strings.EqualFold(host, s.cfg.BaseDomain) {
 			// Strip any port or userinfo tricks before returning.
 			if strings.ContainsAny(host, "@:") {
 				return "/"
@@ -655,7 +688,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		// Deep-link return: preview hosts bounce to the central login with
 		// the original preview URL preserved for post-login return.
 		next := "https://" + host + r.URL.RequestURI()
-		http.Redirect(w, r, "https://"+s.cfg.BaseDomain+"/login?next="+next, http.StatusFound)
+		http.Redirect(w, r, "https://"+s.cfg.BaseDomain+"/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
 	// Drop unsafe ?next= values server-side; the client re-checks anyway.
@@ -687,19 +720,22 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, _, err := s.tokenFor(r); err != nil {
-		http.Redirect(w, r, "/login?next="+r.URL.RequestURI(), http.StatusFound)
+		http.Redirect(w, r, "/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusFound)
 		return
 	}
 	s.serveUI(w, r)
 }
 
 // handlePreview serves one site's static files to any logged-in user and
-// records the visit in that viewer's personal history.
+// records document-navigation visits in that viewer's personal history.
+// Only document navigations (root, directory index, extensionless routes,
+// or Accept text/html documents) record views; asset hits (.js/.css/images
+// etc.) never do, so scrolling a preview's assets does not spam history.
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label string) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		next := "https://" + hostOnly(r.Host) + r.URL.RequestURI()
-		http.Redirect(w, r, "https://"+s.cfg.BaseDomain+"/login?next="+next, http.StatusFound)
+		http.Redirect(w, r, "https://"+s.cfg.BaseDomain+"/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
 	if err := sites.ValidateLabel(label); err != nil {
@@ -709,6 +745,13 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	site := s.metadb.SiteByLabel(token, label)
 	if site == nil {
 		writeErr(w, http.StatusNotFound, "unknown site")
+		return
+	}
+	// Deny encoded traversal/dot tricks before Clean normalizes them away:
+	// %2e decodes to "." so /%2e%2e/secret would otherwise collapse to a
+	// legitimate-looking path and serve index.html with a recorded view.
+	if previewPathHasEncodedDot(r) {
+		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
 	root := filepath.Join(s.cfg.DataDir, "sites", label)
@@ -738,7 +781,10 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 			return
 		}
 		serveFile(w, r, full)
-		s.metadb.RecordView(token, userID, label)
+		// Asset hits serve bytes but record nothing: only documents count.
+		if isDocumentNav(rel, r) {
+			s.metadb.RecordView(token, userID, label)
+		}
 		return
 	}
 	// SPA fallback only for extensionless routes and HTML navigations.
@@ -760,6 +806,25 @@ func isAssetExt(ext string) bool {
 	return false
 }
 
+// isDocumentNav reports whether a preview file hit is a document
+// navigation worth recording: extensionless routes or Accept text/html
+// documents that are not known asset types.
+func isDocumentNav(rel string, r *http.Request) bool {
+	if path.Ext(rel) == "" {
+		return true
+	}
+	return strings.Contains(r.Header.Get("Accept"), "text/html") && !isAssetExt(path.Ext(rel))
+}
+
+// previewPathHasEncodedDot rejects %2e (encoded ".") anywhere in the raw
+// escaped path, plus encoded slashes that could smuggle separators, before
+// path.Clean normalizes them away.
+func previewPathHasEncodedDot(r *http.Request) bool {
+	escaped := strings.ToLower(r.URL.EscapedPath())
+	return strings.Contains(escaped, "%2e") || strings.Contains(escaped, "%252e") ||
+		strings.Contains(escaped, "%2f") || strings.Contains(escaped, "%5c")
+}
+
 func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 	f, err := os.Open(full)
 	if err != nil {
@@ -774,6 +839,15 @@ func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	// Shared parent-domain risk: previews run as <label>.<BaseDomain>,
+	// sibling to the central host under one parent domain, so a malicious
+	// preview could otherwise frame-bust, clickjack, or script against
+	// same-site context. Sandbox without allow-same-origin keeps each
+	// preview in an opaque origin (its JS cannot reach cookies, which are
+	// HttpOnly anyway, nor other previews), and DENY keeps previews
+	// unframeable. allow-scripts stays so static Vite bundles still run.
+	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts")
+	w.Header().Set("X-Frame-Options", "DENY")
 	// Conservative MIME: known web types by extension, octet-stream
 	// otherwise, so uploaded content can never sniff into script.
 	if ct := mime.TypeByExtension(filepath.Ext(strings.ToLower(full))); ct != "" {

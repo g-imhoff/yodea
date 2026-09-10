@@ -332,6 +332,107 @@ func TestMultipartDeploy(t *testing.T) {
 	}
 }
 
+func TestPreviewSandboxHeaders(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>hi</h1>"}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+	rec = doReq(s, http.MethodGet, dep.Label+"."+testDomain, "/", alice, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preview = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "sandbox allow-scripts" {
+		t.Fatalf("CSP = %q, want %q", got, "sandbox allow-scripts")
+	}
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("X-Frame-Options = %q, want DENY", got)
+	}
+}
+
+func TestPreviewAssetHitsDoNotRecordViews(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{
+		"index.html": "<h1>hi</h1>",
+		"app.js":     "console.log(1)",
+	}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+	host := dep.Label + "." + testDomain
+	viewCount := func() int {
+		r := doReq(s, http.MethodGet, testDomain, "/api/views", alice, nil, "")
+		var v struct {
+			Views []any `json:"views"`
+		}
+		_ = json.Unmarshal(r.Body.Bytes(), &v)
+		return len(v.Views)
+	}
+	// Document navigation records.
+	if r := doReq(s, http.MethodGet, host, "/", alice, nil, ""); r.Code != http.StatusOK {
+		t.Fatalf("root preview = %d, want 200", r.Code)
+	}
+	if n := viewCount(); n != 1 {
+		t.Fatalf("views after root = %d, want 1", n)
+	}
+	// Asset hits must not record.
+	if r := doReq(s, http.MethodGet, host, "/app.js", alice, nil, ""); r.Code != http.StatusOK {
+		t.Fatalf("asset preview = %d, want 200", r.Code)
+	}
+	if n := viewCount(); n != 1 {
+		t.Fatalf("views after asset = %d, want 1 (assets must not record)", n)
+	}
+	// Extensionless document fallback records.
+	if r := doReq(s, http.MethodGet, host, "/missing-route", alice, nil, ""); r.Code != http.StatusOK {
+		t.Fatalf("extensionless fallback = %d, want 200", r.Code)
+	}
+	if n := viewCount(); n != 2 {
+		t.Fatalf("views after extensionless = %d, want 2", n)
+	}
+	// Missing asset stays 404 and records nothing.
+	if r := doReq(s, http.MethodGet, host, "/missing.js", alice, nil, ""); r.Code != http.StatusNotFound {
+		t.Fatalf("missing asset = %d, want 404", r.Code)
+	}
+	if n := viewCount(); n != 2 {
+		t.Fatalf("views after missing asset = %d, want 2", n)
+	}
+}
+
+func TestPreviewTraversalAndDotSegmentDenied(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "ok"}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+	host := dep.Label + "." + testDomain
+	for _, p := range []string{"/.env", "/.git/config", "/assets/.hidden", "/%2e%2e/secret", "/%2E%2E/secret", "/..%2fsecret"} {
+		r := doReq(s, http.MethodGet, host, p, alice, nil, "")
+		if r.Code == http.StatusOK {
+			t.Fatalf("GET %q = 200 with %q, want denial (404 or redirect)", p, r.Body.String())
+		}
+		if r.Code != http.StatusNotFound && r.Code != http.StatusMovedPermanently && r.Code != http.StatusFound {
+			t.Fatalf("GET %q = %d, want 404 or redirect", p, r.Code)
+		}
+	}
+}
+
+func TestDeployRejectsDotfile(t *testing.T) {
+	s := newTestServer(t)
+	rec := deploy(t, s, devToken(t, "alice@example.com"), "blog", tarGz(t, map[string]string{
+		"index.html": "ok",
+		".env":       "secret",
+	}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("dotfile deploy = %d, want 400", rec.Code)
+	}
+}
+
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)

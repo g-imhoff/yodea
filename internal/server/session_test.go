@@ -5,6 +5,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -84,13 +86,97 @@ func TestRefreshAndLogout(t *testing.T) {
 	}
 }
 
+func TestSafeNextRejectsPreviewSubdomains(t *testing.T) {
+	s := newTestServer(t)
+	for _, in := range []string{
+		"https://lbl." + testDomain + "/app",
+		"https://lbl." + testDomain + "/",
+		"https://a.b." + testDomain + "/x",
+	} {
+		if got := s.safeNext(in); got != "/" {
+			t.Fatalf("safeNext(%q) = %q, want %q (preview subdomains rejected)", in, got, "/")
+		}
+	}
+	if got := s.safeNext("https://" + testDomain + "/dash"); got != "https://"+testDomain+"/dash" {
+		t.Fatalf("safeNext central = %q, want central URL kept", got)
+	}
+	// Preview-subdomain ?next= is stripped to bare /login.
+	rec := doReq(s, http.MethodGet, testDomain, "/login?next="+url.QueryEscape("https://lbl."+testDomain+"/app"), "", nil, "")
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("preview next = %d %q, want 302 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestLoginNextEscaped(t *testing.T) {
+	s := newTestServer(t)
+	// Dashboard anon redirect must QueryEscape the next value so embedded
+	// & and ? survive as one param.
+	req := httptest.NewRequest(http.MethodGet, "/?a=1&b=2", nil)
+	req.Host = testDomain
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	loc := rec.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/login?next=") {
+		t.Fatalf("dashboard redirect = %q, want /login?next=...", loc)
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := u.Query().Get("next"); got != "/?a=1&b=2" {
+		t.Fatalf("next param = %q, want %q (must be QueryEscaped)", got, "/?a=1&b=2")
+	}
+}
+
+func TestDevRefreshPreservesViewerIdentity(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	req := httptest.NewRequest(http.MethodPost, "/api/session/refresh", strings.NewReader(`{"refresh_token":"anything"}`))
+	req.Host = testDomain
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+alice)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dev refresh = %d, want 200", rec.Code)
+	}
+	var refreshed string
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "yodea_session" {
+			refreshed = c.Value
+		}
+	}
+	if refreshed == "" {
+		t.Fatal("refresh must set a session cookie")
+	}
+	if refreshed != alice {
+		t.Fatalf("refreshed token = %q, want %q (per-viewer identity preserved)", refreshed, alice)
+	}
+	// Without any access token, dev refresh documents its fallback to the
+	// generic dev user.
+	req2 := httptest.NewRequest(http.MethodPost, "/api/session/refresh", strings.NewReader(`{"refresh_token":"anything"}`))
+	req2.Host = testDomain
+	req2.Header.Set("Content-Type", "application/json")
+	rec2 := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec2, req2)
+	var fallback string
+	for _, c := range rec2.Result().Cookies() {
+		if c.Name == "yodea_session" {
+			fallback = c.Value
+		}
+	}
+	if fallback != "dev" {
+		t.Fatalf("anonymous dev refresh = %q, want %q (documented fallback)", fallback, "dev")
+	}
+}
+
 func TestSafeNext(t *testing.T) {
 	s := newTestServer(t)
 	for in, want := range map[string]string{
 		"/":                                      "/",
 		"/dashboard?x=1":                         "/dashboard?x=1",
 		"https://" + testDomain + "/":            "https://" + testDomain + "/",
-		"https://lbl." + testDomain + "/app":     "https://lbl." + testDomain + "/app",
+		"https://lbl." + testDomain + "/app":     "/",
 		"":                                       "/",
 		"//evil.test/":                           "/",
 		"https://evil.test/":                     "/",
