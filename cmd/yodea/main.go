@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 
 	"github.com/g-imhoff/yodea/internal/client"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -29,12 +30,14 @@ func run(args []string) error {
 		return fmt.Errorf("usage: yodea [--server URL] <login|init|push|list|delete> [options]")
 	}
 	serverFlag := ""
+	serverFlagSet := false
 	rest := args
 	if rest[0] == "--server" || rest[0] == "-server" {
 		if len(rest) < 3 {
 			return fmt.Errorf("usage: yodea --server URL <command> [options]")
 		}
 		serverFlag = rest[1]
+		serverFlagSet = true
 		rest = rest[2:]
 	}
 	server := client.ResolveServer(serverFlag)
@@ -44,11 +47,11 @@ func run(args []string) error {
 	case "init":
 		return cmdInit(rest[1:])
 	case "push":
-		return cmdPush(server, rest[1:])
+		return cmdPush(server, serverFlagSet, rest[1:])
 	case "list":
-		return cmdList(server, rest[1:])
+		return cmdList(server, serverFlagSet, rest[1:])
 	case "delete":
-		return cmdDelete(server, rest[1:])
+		return cmdDelete(server, serverFlagSet, rest[1:])
 	case "-h", "-help", "--help", "help":
 		usage()
 		return nil
@@ -60,7 +63,8 @@ func run(args []string) error {
 func usage() {
 	fmt.Println(`yodea [--server URL] <command> [options]
 
-  login --email E --password P   log in via POST /api/session (session saved 0600)
+  login --email E            log in via POST /api/session (session saved 0600;
+                             password from $YODEA_PASSWORD or a hidden prompt)
   init [project] [--dir D] [--force] [--link]
       scaffold a fresh Vite React TS app, or link an existing folder
       (writes only yodea.json there; never overwrites user files)
@@ -75,15 +79,25 @@ Server: --server, else $YODEA_SERVER, else localhost:8093 when $YODEA_DEV=1.`)
 func cmdLogin(server string, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	email := fs.String("email", os.Getenv("YODEA_EMAIL"), "login email ($YODEA_EMAIL)")
-	password := fs.String("password", os.Getenv("YODEA_PASSWORD"), "login password ($YODEA_PASSWORD)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *email == "" || *password == "" {
-		return fmt.Errorf("login needs --email and --password (or $YODEA_EMAIL / $YODEA_PASSWORD)")
+	if *email == "" {
+		return fmt.Errorf("login needs --email (or $YODEA_EMAIL)")
+	}
+	password := os.Getenv("YODEA_PASSWORD")
+	if password == "" {
+		var err error
+		password, err = promptPassword()
+		if err != nil {
+			return err
+		}
+		if password == "" {
+			return fmt.Errorf("login needs a password (set $YODEA_PASSWORD or type it at the prompt)")
+		}
 	}
 	c := client.New(server, "")
-	if err := c.Login(*email, *password); err != nil {
+	if err := c.Login(*email, password); err != nil {
 		return err
 	}
 	sess, err := client.LoadSession()
@@ -96,6 +110,18 @@ func cmdLogin(server string, args []string) error {
 	}
 	fmt.Printf("logged in as %s (%s)\n", who, server)
 	return nil
+}
+
+// promptPassword reads a hidden password from the terminal. The secret
+// never comes from argv.
+func promptPassword() (string, error) {
+	fmt.Fprint(os.Stderr, "password: ")
+	b, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", fmt.Errorf("reading password: %w", err)
+	}
+	return string(b), nil
 }
 
 func cmdInit(args []string) error {
@@ -127,28 +153,25 @@ func cmdInit(args []string) error {
 	return nil
 }
 
-func authed(server string) (*client.Client, error) {
+func authed(server string, serverFlagSet bool) (*client.Client, error) {
 	sess, err := client.LoadSession()
 	if err != nil {
 		return nil, err
 	}
-	srv := server
-	if sess.Server != "" && os.Getenv("YODEA_SERVER") == "" && os.Getenv("YODEA_DEV") == "" {
-		// Stay with the server the session belongs to unless the caller
-		// explicitly overrides it.
-		srv = sess.Server
-	}
+	// An explicit --server flag always wins. Fall back to the saved
+	// session server only when no flag and no YODEA_SERVER and no YODEA_DEV.
+	srv := client.EffectiveServer(server, serverFlagSet, sess.Server)
 	return client.New(srv, sess.Token), nil
 }
 
-func cmdPush(server string, args []string) error {
+func cmdPush(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project folder")
 	projectFlag := fs.String("project", "", "project name (default: yodea.json, then folder name)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	c, err := authed(server)
+	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
 	}
@@ -167,12 +190,12 @@ func cmdPush(server string, args []string) error {
 	return nil
 }
 
-func cmdList(server string, args []string) error {
+func cmdList(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	c, err := authed(server)
+	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
 	}
@@ -190,7 +213,7 @@ func cmdList(server string, args []string) error {
 	return nil
 }
 
-func cmdDelete(server string, args []string) error {
+func cmdDelete(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -198,7 +221,7 @@ func cmdDelete(server string, args []string) error {
 	if fs.NArg() == 0 {
 		return fmt.Errorf("usage: yodea delete <project>")
 	}
-	c, err := authed(server)
+	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
 	}

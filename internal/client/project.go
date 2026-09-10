@@ -107,7 +107,10 @@ haveViteConfig:
 }
 
 // ReadProject resolves the project name: explicit flag first, then the
-// folder's yodea.json link file, then the directory base name.
+// folder's yodea.json link file, then the directory base name. A present
+// but unreadable, badly-formed, or invalid yodea.json is a hard error
+// naming the file; the folder name is only a fallback when no link file
+// exists at all.
 func ReadProject(dir, flag string) (string, error) {
 	if strings.TrimSpace(flag) != "" {
 		name := strings.TrimSpace(flag)
@@ -116,14 +119,24 @@ func ReadProject(dir, flag string) (string, error) {
 		}
 		return name, nil
 	}
-	if data, err := os.ReadFile(filepath.Join(dir, ConfigFile)); err == nil {
+	cfgPath := filepath.Join(dir, ConfigFile)
+	data, err := os.ReadFile(cfgPath)
+	if err == nil {
 		var cfg ProjectConfig
-		if err := json.Unmarshal(data, &cfg); err == nil && strings.TrimSpace(cfg.Project) != "" {
-			if err := CheckProject(cfg.Project); err != nil {
-				return "", fmt.Errorf("bad project in %s: %w", ConfigFile, err)
-			}
-			return cfg.Project, nil
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return "", fmt.Errorf("bad config %s: invalid JSON: %w", ConfigFile, err)
 		}
+		name := strings.TrimSpace(cfg.Project)
+		if name == "" {
+			return "", fmt.Errorf("bad config %s: missing \"project\" name", ConfigFile)
+		}
+		if err := CheckProject(name); err != nil {
+			return "", fmt.Errorf("bad config %s: %w", ConfigFile, err)
+		}
+		return name, nil
+	}
+	if !os.IsNotExist(err) {
+		return "", fmt.Errorf("bad config %s: %w", ConfigFile, err)
 	}
 	base := filepath.Base(filepath.Clean(dir))
 	if base == "." || base == "/" || base == "" {
@@ -160,8 +173,16 @@ func linkDir(dir, project string, force bool) error {
 	if err := ValidateReactTS(dir); err != nil {
 		return fmt.Errorf("cannot link: %w", err)
 	}
-	return writeNew(filepath.Join(dir, ConfigFile), `{"project": "`+project+"\"}\n", force,
-		"already linked (yodea.json exists); use --force to re-link to a new project name")
+	cfgPath := filepath.Join(dir, ConfigFile)
+	if _, err := os.Stat(cfgPath); err == nil && !force {
+		return fmt.Errorf("%s: already linked (yodea.json exists); use --force to re-link to a new project name", cfgPath)
+	}
+	// Link mode owns yodea.json: --force overwrites it. Scaffolded user
+	// files are still never overwritten (see Scaffold).
+	if err := os.WriteFile(cfgPath, []byte(`{"project": "`+project+"\"}\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(cfgPath, 0o644)
 }
 
 // Scaffold writes a fresh Vite React TS app into dir. Files that already

@@ -46,6 +46,27 @@ func ResolveServer(flag string) string {
 	return DefaultProdServer
 }
 
+// EffectiveServer resolves the server for an authenticated command given
+// whether --server was explicitly passed plus the saved session server.
+// An explicit flag always wins. Otherwise YODEA_SERVER, then the YODEA_DEV
+// default, then the saved session server (only when no flag and no env
+// override), else production.
+func EffectiveServer(flag string, flagSet bool, sessServer string) string {
+	if flagSet {
+		return ResolveServer(flag)
+	}
+	if v := strings.TrimSpace(os.Getenv("YODEA_SERVER")); v != "" {
+		return strings.TrimSuffix(v, "/")
+	}
+	if os.Getenv("YODEA_DEV") == "1" {
+		return DefaultDevServer
+	}
+	if strings.TrimSpace(sessServer) != "" {
+		return strings.TrimSuffix(strings.TrimSpace(sessServer), "/")
+	}
+	return DefaultProdServer
+}
+
 // Client talks to one yodead server with a stored session token.
 type Client struct {
 	Server string
