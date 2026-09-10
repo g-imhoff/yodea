@@ -1,0 +1,338 @@
+package server
+
+// HTTP contract tests for yodead: auth gating, deploy validation, preview
+// sandboxing, and per-viewer privacy of views plus favorites.
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/g-imhoff/yodea/internal/auth"
+)
+
+const testDomain = "previews.example.test"
+
+func newTestServer(t *testing.T) *Server {
+	t.Helper()
+	s, err := New(Config{DataDir: t.TempDir(), BaseDomain: testDomain, DevNoAuth: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	return s
+}
+
+func devToken(t *testing.T, email string) string {
+	t.Helper()
+	tok, _, err := auth.DevTokenFor(email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+func doReq(s *Server, method, host, path, token string, body io.Reader, ctype string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, body)
+	req.Host = host
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if ctype != "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func tarGz(t *testing.T, files map[string]string) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg, Format: tar.FormatPAX}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(body)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf
+}
+
+func deploy(t *testing.T, s *Server, token, project string, arc *bytes.Buffer) *httptest.ResponseRecorder {
+	t.Helper()
+	return doReq(s, http.MethodPost, testDomain, "/api/sites/"+project+"/deploy", token, arc, "application/gzip")
+}
+
+func TestHealthzOpen(t *testing.T) {
+	s := newTestServer(t)
+	rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz = %d, want 200", rec.Code)
+	}
+}
+
+func TestUnauthenticatedRejected(t *testing.T) {
+	s := newTestServer(t)
+	for _, tc := range []struct{ method, path string }{
+		{http.MethodGet, "/api/sites"},
+		{http.MethodGet, "/api/views"},
+		{http.MethodGet, "/api/favorites"},
+		{http.MethodPost, "/api/favorites"},
+	} {
+		var body io.Reader
+		if tc.method == http.MethodPost {
+			body = strings.NewReader(`{"label":"x"}`)
+		}
+		rec := doReq(s, tc.method, testDomain, tc.path, "", body, "application/json")
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+	}
+	// Dashboard root requires login: redirect to central login.
+	rec := doReq(s, http.MethodGet, testDomain, "/", "", nil, "")
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "/login") {
+		t.Fatalf("dashboard anon = %d %q, want 302 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+func TestBadLabelRejected(t *testing.T) {
+	s := newTestServer(t)
+	tok := devToken(t, "alice@example.com")
+	for _, project := range []string{"-bad-", strings.Repeat("p", 80)} {
+		rec := deploy(t, s, tok, project, tarGz(t, map[string]string{"index.html": "x"}))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("project %q = %d, want 400", project, rec.Code)
+		}
+	}
+}
+
+func TestArchiveWithoutIndexRejected(t *testing.T) {
+	s := newTestServer(t)
+	rec := deploy(t, s, devToken(t, "alice@example.com"), "blog", tarGz(t, map[string]string{"app.js": "x"}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("indexless deploy = %d, want 400", rec.Code)
+	}
+}
+
+func TestTraversalArchiveRejected(t *testing.T) {
+	s := newTestServer(t)
+	rec := deploy(t, s, devToken(t, "alice@example.com"), "blog", tarGz(t, map[string]string{
+		"index.html":   "ok",
+		"../evil.html": "x",
+	}))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("traversal deploy = %d, want 400", rec.Code)
+	}
+}
+
+func TestDeployPreviewAndViewsFlow(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	bob := devToken(t, "bob@example.com")
+
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>blog</h1>"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+	var dep struct {
+		Label string `json:"label"`
+		URL   string `json:"url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dep); err != nil {
+		t.Fatal(err)
+	}
+	if dep.Label == "" || !strings.Contains(dep.URL, dep.Label+"."+testDomain) {
+		t.Fatalf("bad deploy response: %+v", dep)
+	}
+
+	// Redeploy overwrites the same label.
+	rec2 := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>v2</h1>"}))
+	var dep2 struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec2.Body.Bytes(), &dep2)
+	if dep2.Label != dep.Label {
+		t.Fatalf("redeploy label = %q, want %q", dep2.Label, dep.Label)
+	}
+
+	// Sites are personal: bob sees none.
+	rec = doReq(s, http.MethodGet, testDomain, "/api/sites", bob, nil, "")
+	var sites struct {
+		Sites []any `json:"sites"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &sites)
+	if len(sites.Sites) != 0 {
+		t.Fatalf("bob sees %d sites, want 0", len(sites.Sites))
+	}
+
+	// Any logged-in user can open the preview; anon is bounced to login.
+	rec = doReq(s, http.MethodGet, dep.Label+"."+testDomain, "/", bob, nil, "")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "v2") {
+		t.Fatalf("bob preview = %d %q, want 200 with v2", rec.Code, rec.Body.String())
+	}
+	rec = doReq(s, http.MethodGet, dep.Label+"."+testDomain, "/", "", nil, "")
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "/login?next=") {
+		t.Fatalf("anon preview = %d %q, want 302 with next", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// Visit recorded in the viewer's own history only.
+	rec = doReq(s, http.MethodGet, testDomain, "/api/views", bob, nil, "")
+	var views struct {
+		Views []struct {
+			Label string `json:"label"`
+		} `json:"views"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &views)
+	if len(views.Views) != 1 || views.Views[0].Label != dep.Label {
+		t.Fatalf("bob views = %+v, want [%s]", views.Views, dep.Label)
+	}
+	rec = doReq(s, http.MethodGet, testDomain, "/api/views", alice, nil, "")
+	var aviews struct {
+		Views []any `json:"views"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &aviews)
+	if len(aviews.Views) != 0 {
+		t.Fatalf("alice sees %d views, want 0", len(aviews.Views))
+	}
+}
+
+func TestFavoritesFlow(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	bob := devToken(t, "bob@example.com")
+
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "x"}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+
+	// Bob favorites alice's preview: allowed for any preview he can open.
+	rec = doReq(s, http.MethodPost, testDomain, "/api/favorites", bob,
+		strings.NewReader(`{"label":`+jsonQuote(dep.Label)+`}`), "application/json")
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("favorite = %d: %s", rec.Code, rec.Body.String())
+	}
+	// Favoriting a missing preview is 404.
+	rec = doReq(s, http.MethodPost, testDomain, "/api/favorites", bob,
+		strings.NewReader(`{"label":"no-such-site"}`), "application/json")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing favorite = %d, want 404", rec.Code)
+	}
+
+	rec = doReq(s, http.MethodGet, testDomain, "/api/favorites", bob, nil, "")
+	var favs struct {
+		Favorites []struct {
+			Label   string `json:"label"`
+			Link    string `json:"link"`
+			Owner   string `json:"owner"`
+			Project string `json:"project"`
+		} `json:"favorites"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &favs)
+	if len(favs.Favorites) != 1 {
+		t.Fatalf("bob favorites = %+v, want 1", favs.Favorites)
+	}
+	f := favs.Favorites[0]
+	if f.Label != dep.Label || !strings.Contains(f.Link, dep.Label) || f.Project != "blog" || f.Owner == "" {
+		t.Fatalf("bad favorite row: %+v", f)
+	}
+	// Alice's list stays empty: favorites are per viewer.
+	rec = doReq(s, http.MethodGet, testDomain, "/api/favorites", alice, nil, "")
+	var afavs struct {
+		Favorites []any `json:"favorites"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &afavs)
+	if len(afavs.Favorites) != 0 {
+		t.Fatalf("alice sees %d favorites, want 0", len(afavs.Favorites))
+	}
+
+	// Unfavorite.
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/favorites/"+dep.Label, bob, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unfavorite = %d, want 200", rec.Code)
+	}
+	rec = doReq(s, http.MethodGet, testDomain, "/api/favorites", bob, nil, "")
+	_ = json.Unmarshal(rec.Body.Bytes(), &favs)
+	if len(favs.Favorites) != 0 {
+		t.Fatalf("bob favorites after delete = %+v, want empty", favs.Favorites)
+	}
+}
+
+func TestDeletedPreviewDropsOutOfFavorites(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	bob := devToken(t, "bob@example.com")
+
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "x"}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+	rec = doReq(s, http.MethodPost, testDomain, "/api/favorites", bob,
+		strings.NewReader(`{"label":`+jsonQuote(dep.Label)+`}`), "application/json")
+	if rec.Code != http.StatusOK && rec.Code != http.StatusCreated {
+		t.Fatalf("favorite = %d", rec.Code)
+	}
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec = doReq(s, http.MethodGet, testDomain, "/api/favorites", bob, nil, "")
+	var favs struct {
+		Favorites []any `json:"favorites"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &favs)
+	if len(favs.Favorites) != 0 {
+		t.Fatalf("deleted preview still favorited: %+v", favs.Favorites)
+	}
+	// Preview itself is gone.
+	rec = doReq(s, http.MethodGet, dep.Label+"."+testDomain, "/", bob, nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted preview = %d (%s), want 404", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMultipartDeploy(t *testing.T) {
+	s := newTestServer(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("archive", "dist.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arc := tarGz(t, map[string]string{"index.html": "mp"})
+	if _, err := io.Copy(fw, arc); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := doReq(s, http.MethodPost, testDomain, "/api/sites/mp/deploy",
+		devToken(t, "alice@example.com"), &buf, mw.FormDataContentType())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("multipart deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func jsonQuote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

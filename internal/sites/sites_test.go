@@ -1,0 +1,123 @@
+package sites
+
+import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+type entry struct {
+	name string
+	body string
+	flag byte
+}
+
+func pack(t *testing.T, entries []entry) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		flag := e.flag
+		if flag == 0 {
+			flag = tar.TypeReg
+		}
+		hdr := &tar.Header{Name: e.name, Mode: 0o644, Size: int64(len(e.body)), Typeflag: flag, Format: tar.FormatPAX}
+		if flag == tar.TypeSymlink || flag == tar.TypeLink {
+			hdr.Linkname = "index.html"
+			hdr.Size = 0
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if flag == tar.TypeReg {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return &buf
+}
+
+func TestExtractDistRoundTrip(t *testing.T) {
+	arc := pack(t, []entry{
+		{name: "index.html", body: "<h1>hi</h1>"},
+		{name: "assets/app.js", body: "console.log(1)"},
+	})
+	dest := filepath.Join(t.TempDir(), "sites", "lbl")
+	res, err := ExtractDist(arc, dest, 0, 0)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if res.Files != 2 {
+		t.Fatalf("files = %d, want 2", res.Files)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "index.html")); err != nil {
+		t.Fatalf("index.html missing: %v", err)
+	}
+}
+
+func TestExtractDistRequiresIndexHTML(t *testing.T) {
+	arc := pack(t, []entry{{name: "assets/app.js", body: "x"}})
+	_, err := ExtractDist(arc, filepath.Join(t.TempDir(), "lbl"), 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "index.html") {
+		t.Fatalf("want index.html error, got %v", err)
+	}
+}
+
+func TestExtractDistRejectsTraversal(t *testing.T) {
+	for _, name := range []string{"../evil.html", "a/../../evil.html", "/abs.html"} {
+		arc := pack(t, []entry{{name: name, body: "x"}, {name: "index.html", body: "ok"}})
+		_, err := ExtractDist(arc, filepath.Join(t.TempDir(), "lbl"), 0, 0)
+		if err == nil {
+			t.Fatalf("%q: want rejection, got nil", name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(t.TempDir(), "..", "evil.html")); !os.IsNotExist(err) {
+		t.Fatalf("traversal wrote outside dest")
+	}
+}
+
+func TestExtractDistRejectsSymlinks(t *testing.T) {
+	arc := pack(t, []entry{
+		{name: "link", body: "", flag: tar.TypeSymlink},
+		{name: "index.html", body: "ok"},
+	})
+	_, err := ExtractDist(arc, filepath.Join(t.TempDir(), "lbl"), 0, 0)
+	if err == nil || !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("want non-regular rejection, got %v", err)
+	}
+}
+
+func TestValidateLabel(t *testing.T) {
+	for _, bad := range []string{"", "-abc", "abc-", "ABC", "a_b", "a.b", strings.Repeat("a", 64)} {
+		if err := ValidateLabel(bad); err == nil {
+			t.Fatalf("%q: want error, got nil", bad)
+		}
+	}
+	for _, ok := range []string{"a", "abc-123", strings.Repeat("a", 63)} {
+		if err := ValidateLabel(ok); err != nil {
+			t.Fatalf("%q: want nil, got %v", ok, err)
+		}
+	}
+}
+
+func TestLabelForFits63(t *testing.T) {
+	lbl := LabelFor("someuser", strings.Repeat("p", 100))
+	if len(lbl) > 63 {
+		t.Fatalf("label too long: %d", len(lbl))
+	}
+	if err := ValidateLabel(lbl); err != nil {
+		t.Fatalf("label invalid: %v", err)
+	}
+}
