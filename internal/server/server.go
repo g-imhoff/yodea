@@ -23,6 +23,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/g-imhoff/yodea/internal/auth"
@@ -64,6 +66,10 @@ type Server struct {
 	metadb   store.Storage
 	authc    *auth.Client
 	mux      *http.ServeMux
+	// srv is the live listener once Run starts, so Shutdown can drain
+	// it on SIGINT/SIGTERM. Guarded by mu.
+	mu  sync.Mutex
+	srv *http.Server
 }
 
 func New(cfg Config) (*Server, error) {
@@ -143,7 +149,9 @@ func (s *Server) routes() {
 	m.HandleFunc("/", s.handleRoot)
 }
 
-// Run serves until interrupted.
+// Run serves until interrupted or Shutdown is called. A Shutdown-driven
+// stop reports nil (not http.ErrServerClosed) so signal exits stay quiet;
+// any other error (bind failure, ...) is returned as is.
 func (s *Server) Run() error {
 	srv := &http.Server{
 		Addr:         s.cfg.Addr,
@@ -151,9 +159,27 @@ func (s *Server) Run() error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}
+	s.mu.Lock()
+	s.srv = srv
+	s.mu.Unlock()
 	log.Printf("yodead listening on %s for %s (store=%s dev=%v assets=%v)",
 		s.cfg.Addr, s.cfg.BaseDomain, s.storeName(), s.cfg.DevNoAuth, HasAssets())
-	return srv.ListenAndServe()
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
+}
+
+// Shutdown drains in-flight requests (deploys, db.json writes) until ctx
+// expires. main calls it on SIGINT/SIGTERM; Run then returns nil.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	srv := s.srv
+	s.mu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 func (s *Server) storeName() string {
@@ -191,8 +217,49 @@ func (s *Server) tokenFor(r *http.Request) (token, userID string, err error) {
 	return token, userID, nil
 }
 
+// handleHealth is readiness, not just liveness: 200 {"status":"ok"}
+// only when the data dir is usable and the metadata store answers. Dead
+// disk or dead store reads 503 so traffic moves elsewhere.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	if err := s.checkReady(); err != nil {
+		log.Printf("healthz unavailable: %v", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable"})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// checkReady probes the data dir (stat, is-dir, writable) plus one store
+// read. RecentViews is the read that stays non-nil when healthy on both
+// backends (local make()s its result; PostgREST decodes [] to an empty
+// non-nil slice), so a nil return means a Supabase transport error: the
+// list handlers deliberately tolerate that nil as empty, but readiness
+// must not. Empty (len 0) stays healthy here. The empty token leans on
+// the server-side key for Supabase, same as handleCaddyAsk.
+func (s *Server) checkReady() error {
+	info, err := os.Stat(s.cfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("data dir: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("data dir is not a directory")
+	}
+	// Deploys extract under DataDir/sites and the local store rewrites
+	// db.json here, so a read-only DataDir must read unready.
+	probe, err := os.CreateTemp(s.cfg.DataDir, ".healthz-*")
+	if err != nil {
+		return fmt.Errorf("data dir not writable: %w", err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	if s.metadb == nil {
+		return errors.New("metadata store not configured")
+	}
+	if s.metadb.RecentViews("", "__healthz__", 1) == nil {
+		return errors.New("metadata store unreachable")
+	}
+	return nil
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {

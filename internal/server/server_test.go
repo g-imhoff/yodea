@@ -7,15 +7,21 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/g-imhoff/yodea/internal/auth"
+	"github.com/g-imhoff/yodea/internal/store"
 )
 
 const testDomain = "previews.example.test"
@@ -85,6 +91,117 @@ func TestHealthzOpen(t *testing.T) {
 	rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, "")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("healthz = %d, want 200", rec.Code)
+	}
+}
+
+func TestHealthzBodyWhenHealthy(t *testing.T) {
+	s := newTestServer(t)
+	rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("healthz = %d, want 200", rec.Code)
+	}
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Status != "ok" {
+		t.Fatalf("healthz status = %q, want %q", body.Status, "ok")
+	}
+}
+
+func TestHealthz503WhenDataDirDead(t *testing.T) {
+	s := newTestServer(t)
+	// DataDir replaced by a plain file: stat succeeds but is-dir fails.
+	dead := filepath.Join(t.TempDir(), "notadir")
+	if err := os.WriteFile(dead, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.cfg.DataDir = dead
+	if rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz with file DataDir = %d, want 503", rec.Code)
+	}
+	// Missing dir is unready too.
+	s.cfg.DataDir = filepath.Join(t.TempDir(), "does-not-exist")
+	if rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz with missing DataDir = %d, want 503", rec.Code)
+	}
+}
+
+// nilViewsStore simulates a dead Supabase backend: its reads fail on
+// transport and surface as nil, which the list handlers tolerate as
+// empty. Readiness must not.
+type nilViewsStore struct{ store.Storage }
+
+func (nilViewsStore) RecentViews(_, _ string, _ int) []store.View { return nil }
+
+func TestHealthz503WhenStoreUnreachable(t *testing.T) {
+	s := newTestServer(t)
+	s.metadb = nilViewsStore{}
+	if rec := doReq(s, http.MethodGet, testDomain, "/healthz", "", nil, ""); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("healthz with dead store = %d, want 503", rec.Code)
+	}
+}
+
+func TestRunShutdownDrains(t *testing.T) {
+	// Free loopback port, then hand it to Run.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("no loopback: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	s, err := New(Config{Addr: addr, DataDir: t.TempDir(), BaseDomain: testDomain, DevNoAuth: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run() }()
+
+	// Proxy-free client: the sandbox may set HTTP_PROXY without
+	// NO_PROXY, which must not route loopback through a proxy.
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
+	healthz := "http://" + addr + "/healthz"
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp, err := client.Get(healthz)
+		if err == nil {
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+			err = nil
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server never came up (last err %v)", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown = %v, want nil", err)
+	}
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run after Shutdown = %v, want nil (ErrServerClosed normalized)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after Shutdown")
+	}
+}
+
+func TestShutdownBeforeRunIsNoop(t *testing.T) {
+	s := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown before Run = %v, want nil", err)
 	}
 }
 
