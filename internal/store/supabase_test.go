@@ -461,6 +461,50 @@ func TestSupabaseListFavoritesFiltersOrphans(t *testing.T) {
 	}
 }
 
+// Shared favorites must survive the orphan filter even when RLS hides the
+// site from the viewer JWT: the label-existence check runs with the system
+// key, so only genuinely deleted labels drop out.
+func TestSupabaseListFavoritesKeepsSharedSiteHiddenFromViewer(t *testing.T) {
+	var existAuth, favAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/favorites") {
+			favAuth = r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`[{"user_id":"bob","label":"shared"},{"user_id":"bob","label":"gone"}]`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/sites") {
+			existAuth = r.Header.Get("Authorization")
+			qq := r.URL.Query()
+			if qq.Get("select") != "label" {
+				t.Errorf("existence check select = %q, want label", qq.Get("select"))
+			}
+			if existAuth == "Bearer server-key" {
+				// System sees the shared site; gone is deleted for everyone.
+				_, _ = w.Write([]byte(`[{"label":"shared"}]`))
+				return
+			}
+			// Viewer-scoped RLS hides the other owner's site.
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+	}))
+	defer srv.Close()
+
+	s := NewSupabaseStore(srv.URL, "server-key")
+	got := s.ListFavorites("viewer-jwt", "bob")
+	if favAuth != "Bearer viewer-jwt" {
+		t.Fatalf("favorites auth = %q, want viewer JWT", favAuth)
+	}
+	if existAuth != "Bearer server-key" {
+		t.Fatalf("existence auth = %q, want system key (viewer RLS would hide shared sites)", existAuth)
+	}
+	if len(got) != 1 || got[0].Label != "shared" {
+		t.Fatalf("favorites = %+v, want only shared (gone is a genuine orphan)", got)
+	}
+}
+
 // Parity: ListFavorites after DeleteSite drops the deleted preview on both
 // backends (local prunes eagerly, Supabase filters orphans on read).
 func TestListFavoritesDeleteParity(t *testing.T) {
