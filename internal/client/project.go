@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 
 	"github.com/g-imhoff/yodea/internal/sites"
 )
@@ -23,16 +24,27 @@ type ProjectConfig struct {
 	Project string `json:"project"`
 }
 
-// CheckProject mirrors the server's project-name rules: single path
-// segment, bounded, no leading/trailing hyphen, plus blank/dot-only and
+// CheckProject mirrors the server's project-name rules (see validProject in
+// internal/server/server.go; keep the two consistent by behavior): single
+// path segment, bounded, no leading/trailing hyphen, plus blank/dot-only and
 // reserved-fallback rejection (names sanitizing to "site" unless exactly
-// "site").
+// "site"). Control characters are rejected (they break tab-separated list
+// output and enable terminal line injection) as is leading/trailing
+// whitespace.
 func CheckProject(raw string) error {
 	if raw == "" || len(raw) > 40 {
 		return fmt.Errorf("bad project name %q: must be 1-40 chars", raw)
 	}
 	if strings.TrimSpace(raw) == "" {
 		return fmt.Errorf("bad project name %q: must not be blank", raw)
+	}
+	if raw != strings.TrimSpace(raw) {
+		return fmt.Errorf("bad project name %q: must not have leading or trailing whitespace", raw)
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("bad project name %q: must not contain control characters", raw)
+		}
 	}
 	if strings.Trim(raw, ".") == "" {
 		return fmt.Errorf("bad project name %q: must not be dot-only", raw)
@@ -151,7 +163,13 @@ func ReadProject(dir, flag string) (string, error) {
 	if !os.IsNotExist(err) {
 		return "", fmt.Errorf("bad config %s: %w", ConfigFile, err)
 	}
-	base := filepath.Base(filepath.Clean(dir))
+	// Resolve via absolute path (mirroring cmdInit) so dir="." infers the
+	// current folder name instead of the literal ".".
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	base := filepath.Base(abs)
 	if base == "." || base == "/" || base == "" {
 		return "", fmt.Errorf("cannot infer a project name here; pass --project NAME")
 	}
@@ -247,7 +265,7 @@ func writeNew(path, content string, force bool, existsMsg string) error {
 }
 
 // PackDist writes a gzipped tar of distDir to w: regular files only,
-// dotfiles skipped (the server rejects them), index.html required at top
+// dotfiles refused (the server rejects them), index.html required at top
 // level. Static dist only: symlinks and other specials are refused.
 func PackDist(distDir string, w io.Writer) error {
 	if _, err := os.Stat(filepath.Join(distDir, "index.html")); err != nil {
@@ -269,10 +287,7 @@ func PackDist(distDir string, w io.Writer) error {
 		}
 		base := filepath.Base(rel)
 		if strings.HasPrefix(base, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+			return fmt.Errorf("refusing dotfile %q (dist never needs dotfiles)", filepath.ToSlash(filepath.Join(distDir, rel)))
 		}
 		if d.IsDir() {
 			return nil
