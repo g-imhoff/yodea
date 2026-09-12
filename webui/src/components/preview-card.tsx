@@ -1,3 +1,4 @@
+import { useState } from "react"
 import { StarIcon } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
@@ -26,8 +27,20 @@ export function PreviewCard({
 }: {
   item: PreviewItem
   favorite: boolean
-  onToggleFavorite: (label: string) => void
+  onToggleFavorite: (label: string) => void | Promise<unknown>
 }) {
+  // In-flight guard: the server toggle is async, so ignore re-activation
+  // while a toggle is pending. Tracking lives here (not in favorites.ts)
+  // so the button can disable itself without dashboard changes.
+  const [pending, setPending] = useState(false)
+  const handleToggle = () => {
+    if (pending) return
+    setPending(true)
+    void Promise.resolve()
+      .then(() => onToggleFavorite(item.label))
+      .catch(() => undefined)
+      .finally(() => setPending(false))
+  }
   return (
     <Card>
       <CardHeader>
@@ -48,7 +61,8 @@ export function PreviewCard({
                 ? `Remove ${item.label} from favorites`
                 : `Save ${item.label} to favorites`
             }
-            onClick={() => onToggleFavorite(item.label)}
+            disabled={pending}
+            onClick={handleToggle}
           >
             <StarIcon
               data-icon="inline-start"
@@ -61,6 +75,8 @@ export function PreviewCard({
         {item.badge && <Badge variant="secondary">{item.badge}</Badge>}
         <a
           href={item.href}
+          tabIndex={-1}
+          aria-hidden="true"
           className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
         >
           Open preview
