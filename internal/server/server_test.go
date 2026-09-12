@@ -310,6 +310,54 @@ func TestDeletedPreviewDropsOutOfFavorites(t *testing.T) {
 	}
 }
 
+func TestCaddyAskAllowsOnlyLivePreviews(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+
+	ask := func(domain string) int {
+		rec := doReq(s, http.MethodGet, testDomain, "/api/caddy-ask?domain="+domain, "", nil, "")
+		return rec.Code
+	}
+
+	// Unknown label, apex, foreign host, and bad labels are denied.
+	if got := ask("blog." + testDomain); got != http.StatusNotFound {
+		t.Fatalf("ask unknown = %d, want 404", got)
+	}
+	if got := ask(testDomain); got != http.StatusNotFound {
+		t.Fatalf("ask apex = %d, want 404", got)
+	}
+	if got := ask("blog.evil.test"); got != http.StatusNotFound {
+		t.Fatalf("ask foreign = %d, want 404", got)
+	}
+	if got := ask("-bad-." + testDomain); got != http.StatusNotFound {
+		t.Fatalf("ask bad label = %d, want 404", got)
+	}
+	if got := ask(""); got != http.StatusNotFound {
+		t.Fatalf("ask empty = %d, want 404", got)
+	}
+
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "x"}))
+	var dep struct {
+		Label string `json:"label"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &dep)
+	if got := ask(dep.Label + "." + testDomain); got != http.StatusOK {
+		t.Fatalf("ask live preview = %d, want 200", got)
+	}
+	// Case-insensitive like DNS.
+	if got := ask(strings.ToUpper(dep.Label) + "." + testDomain); got != http.StatusOK {
+		t.Fatalf("ask uppercase = %d, want 200", got)
+	}
+
+	// Deleted previews stop getting certificates.
+	if rec := doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d", rec.Code)
+	}
+	if got := ask(dep.Label + "." + testDomain); got != http.StatusNotFound {
+		t.Fatalf("ask deleted = %d, want 404", got)
+	}
+}
+
 func TestMultipartDeploy(t *testing.T) {
 	s := newTestServer(t)
 	var buf bytes.Buffer

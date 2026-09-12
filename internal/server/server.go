@@ -138,6 +138,7 @@ func (s *Server) routes() {
 	m.HandleFunc("/api/views", s.handleViews)
 	m.HandleFunc("/api/favorites", s.handleFavorites)
 	m.HandleFunc("/api/favorites/", s.handleFavorite)
+	m.HandleFunc("/api/caddy-ask", s.handleCaddyAsk)
 	m.HandleFunc("/login", s.handleLoginPage)
 	m.HandleFunc("/", s.handleRoot)
 }
@@ -662,6 +663,37 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// handleCaddyAsk answers Caddy's on-demand TLS `ask` checks: 200 when
+// domain is a live preview subdomain of this server
+// (<label>.<BaseDomain> with an existing site), 404 otherwise. It takes
+// no auth: Caddy calls it back-channel over the container network, and it
+// reveals at most whether a preview exists (the preview URL is equally
+// guessable, and previews themselves are team-visible by design).
+func (s *Server) handleCaddyAsk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
+	label, ok := strings.CutSuffix(domain, "."+strings.ToLower(s.cfg.BaseDomain))
+	if !ok || label == "" || strings.Contains(label, ".") {
+		writeErr(w, http.StatusNotFound, "not a preview host")
+		return
+	}
+	if err := sites.ValidateLabel(label); err != nil {
+		writeErr(w, http.StatusNotFound, "bad label")
+		return
+	}
+	// Existence check only. The token is empty so the local store ignores
+	// it; the Supabase store falls back to its server-side key, which is
+	// correct here because any existing site may get a certificate.
+	if s.metadb.SiteByLabel("", label) == nil {
+		writeErr(w, http.StatusNotFound, "unknown site")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // safeNext mirrors the dashboard's allowlist: a relative central path with
