@@ -211,10 +211,17 @@ func (s *Store) RecordView(_, userID, label string) {
 }
 
 // RecentViews returns personal history newest first, at most n entries.
-// It never includes other users' views.
+// It never includes other users' views. n is clamped to 0..ViewReturn;
+// n<=0 returns empty.
 func (s *Store) RecentViews(_, userID string, n int) []View {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n <= 0 {
+		return []View{}
+	}
+	if n > ViewReturn {
+		n = ViewReturn
+	}
 	views := s.d.Views[userID]
 	if len(views) > n {
 		views = views[:n]

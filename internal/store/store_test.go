@@ -126,3 +126,25 @@ func TestFavoritesPrivateAndPrunedOnDelete(t *testing.T) {
 		t.Fatalf("deleted preview still favorited: %v", got)
 	}
 }
+
+func TestLocalRecentViewsClamp(t *testing.T) {
+	s := openTest(t)
+	for i := 0; i < 5; i++ {
+		s.RecordView("", "alice", "lbl")
+	}
+	if got := s.RecentViews("", "alice", -5); len(got) != 0 {
+		t.Fatalf("RecentViews(-5) = %d, want empty (no panic)", len(got))
+	}
+	if got := s.RecentViews("", "alice", 0); len(got) != 0 {
+		t.Fatalf("RecentViews(0) = %d, want empty", len(got))
+	}
+	for i := 0; i < ViewCap+10; i++ {
+		s.RecordView("", "carol", "lbl")
+	}
+	if got := s.RecentViews("", "carol", 1000); len(got) != ViewReturn {
+		t.Fatalf("RecentViews(1000) = %d, want clamped to ViewReturn (%d)", len(got), ViewReturn)
+	}
+	if got := s.RecentViews("", "carol", 5); len(got) != 5 {
+		t.Fatalf("RecentViews(5) = %d, want 5", len(got))
+	}
+}
