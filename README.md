@@ -43,7 +43,9 @@ no symlinks, `index.html` required).
 `yodead` serves the dashboard, login, session API, and preview subdomains.
 It runs in Docker behind Caddy, which terminates TLS and provisions one
 certificate per preview after asking yodead (`GET /api/caddy-ask`) whether
-the hostname is a live preview. No proxy edits per deploy.
+the hostname is a live preview. No proxy edits per deploy. Samples and
+procedures (Dockerfile, Caddyfile sample, DataDir layout, run command,
+Caddy reload, cert behavior, single-writer rule) live in `deploy/`.
 
 ```sh
 yodead --dev --addr 127.0.0.1:8093 --data-dir ./data --domain previews.example.test
