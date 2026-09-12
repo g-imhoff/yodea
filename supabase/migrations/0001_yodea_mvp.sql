@@ -40,19 +40,23 @@ alter table public.site_views enable row level security;
 alter table public.favorites enable row level security;
 
 -- Owners manage their own rows.
+drop policy if exists "sites_owner_all" on public.sites;
 create policy "sites_owner_all" on public.sites
   for all to authenticated using (auth.uid()::text = user_id)
   with check (auth.uid()::text = user_id);
 
 -- Any logged-in user may read any preview row (preview serving plus
 -- favoriting); writes stay owner-only via the policy above.
+drop policy if exists "sites_preview_read" on public.sites;
 create policy "sites_preview_read" on public.sites
   for select to authenticated using (true);
 
+drop policy if exists "site_views_owner_all" on public.site_views;
 create policy "site_views_owner_all" on public.site_views
   for all to authenticated using (auth.uid()::text = user_id)
   with check (auth.uid()::text = user_id);
 
+drop policy if exists "favorites_owner_all" on public.favorites;
 create policy "favorites_owner_all" on public.favorites
   for all to authenticated using (auth.uid()::text = user_id)
   with check (auth.uid()::text = user_id);
