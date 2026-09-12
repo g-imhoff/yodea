@@ -215,8 +215,38 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func writeErr(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+// Error codes are stable machine-readable strings alongside the human
+// message: {"error":msg,"code":code}. Statuses stay frozen per condition
+// (401/400/404/409/413/500 plus legacy 403/405/502/503).
+func statusForCode(code string) int {
+	switch code {
+	case "login_required", "invalid_credentials", "auth_expired":
+		return http.StatusUnauthorized
+	case "csrf_required":
+		return http.StatusForbidden
+	case "bad_request", "bad_project", "rejected_upload":
+		return http.StatusBadRequest
+	case "label_taken":
+		return http.StatusConflict
+	case "unknown_site", "no_such_project", "no_such_favorite", "not_found":
+		return http.StatusNotFound
+	case "upload_too_large":
+		return http.StatusRequestEntityTooLarge
+	case "deploy_failed", "unknown":
+		return http.StatusInternalServerError
+	case "method_not_allowed":
+		return http.StatusMethodNotAllowed
+	case "auth_not_configured":
+		return http.StatusServiceUnavailable
+	case "verify_failed":
+		return http.StatusBadGateway
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func writeErr(w http.ResponseWriter, code, msg string) {
+	writeJSON(w, statusForCode(code), map[string]string{"error": msg, "code": code})
 }
 
 // tokenFor authenticates API callers via Bearer header, falling back to the
@@ -285,7 +315,7 @@ func (s *Server) checkCSRF(w http.ResponseWriter, r *http.Request, token string)
 		return true
 	}
 	if r.Header.Get(csrfHeaderName) != csrfTokenFor(token) {
-		writeErr(w, http.StatusForbidden, "csrf required")
+		writeErr(w, "csrf_required", "csrf required")
 		return false
 	}
 	return true
@@ -371,18 +401,18 @@ func (s *Server) setSessionCookies(w http.ResponseWriter, access string, accessT
 
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	var body loginBody
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad request")
+		writeErr(w, "bad_request", "bad request")
 		return
 	}
 	if s.cfg.DevNoAuth {
 		token, userID, err := auth.DevTokenFor(body.Email)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
+			writeErr(w, "bad_request", err.Error())
 			return
 		}
 		s.setSessionCookies(w, token, 3600, "")
@@ -390,17 +420,17 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.authc == nil {
-		writeErr(w, http.StatusServiceUnavailable, "auth not configured")
+		writeErr(w, "auth_not_configured", "auth not configured")
 		return
 	}
 	sess, err := s.authc.Login(body.Email, body.Password)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "invalid email or password")
+		writeErr(w, "invalid_credentials", "invalid email or password")
 		return
 	}
 	userID, err := s.verifier.Verify(sess.AccessToken)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, "could not verify new session")
+		writeErr(w, "verify_failed", "could not verify new session")
 		return
 	}
 	s.setSessionCookies(w, sess.AccessToken, sess.ExpiresIn, sess.RefreshToken)
@@ -409,7 +439,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	refresh := ""
@@ -424,7 +454,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if refresh == "" {
-		writeErr(w, http.StatusUnauthorized, "no refresh token")
+		writeErr(w, "login_required", "no refresh token")
 		return
 	}
 	if s.cfg.DevNoAuth {
@@ -447,12 +477,12 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.authc == nil {
-		writeErr(w, http.StatusServiceUnavailable, "auth not configured")
+		writeErr(w, "auth_not_configured", "auth not configured")
 		return
 	}
 	sess, err := s.authc.Refresh(refresh)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "session expired, log in again")
+		writeErr(w, "auth_expired", "session expired, log in again")
 		return
 	}
 	s.setSessionCookies(w, sess.AccessToken, sess.ExpiresIn, sess.RefreshToken)
@@ -461,7 +491,7 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	// Cookie-authed writes need the synchronizer token so a same-site
@@ -507,12 +537,12 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		return
 	}
 	list := s.metadb.ListSites(token, userID)
@@ -528,7 +558,7 @@ func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
 	parts := strings.SplitN(rest, "/", 2)
 	project := parts[0]
 	if project == "" || strings.Contains(project, "/") {
-		writeErr(w, http.StatusBadRequest, "project required")
+		writeErr(w, "bad_project", "project required")
 		return
 	}
 	switch {
@@ -537,7 +567,7 @@ func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && len(parts) == 1:
 		s.handleDelete(w, r, project)
 	default:
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 	}
 }
 
@@ -554,7 +584,7 @@ func isLabelTaken(err error) bool {
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project string) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", "unknown", project, "", err)
 		return
 	}
@@ -562,7 +592,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 		return
 	}
 	if !validProject(project) {
-		writeErr(w, http.StatusBadRequest, "bad project name")
+		writeErr(w, "bad_project", "bad project name")
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%s", userID, project, "", "bad project name")
 		return
 	}
@@ -574,7 +604,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	}
 	label := s.labelFor(token, userID, project)
 	if err := sites.ValidateLabel(label); err != nil {
-		writeErr(w, http.StatusBadRequest, "bad label: "+err.Error())
+		writeErr(w, "bad_request", "bad label: "+err.Error())
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		return
 	}
@@ -608,9 +638,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	}); err != nil {
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		if isLabelTaken(err) {
-			writeErr(w, http.StatusConflict, err.Error())
+			writeErr(w, "label_taken", err.Error())
 		} else {
-			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+			writeErr(w, "deploy_failed", "deploy failed")
 		}
 		return
 	}
@@ -620,7 +650,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	if err != nil {
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		cleanupPlaceholder()
-		writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		writeErr(w, "deploy_failed", "deploy failed")
 		return
 	}
 	res, err := sites.ExtractToStaging(bytes.NewReader(arc), staging, 0, 0)
@@ -629,9 +659,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		cleanupPlaceholder()
 		if sites.IsValidationError(err) {
-			writeErr(w, http.StatusBadRequest, "rejected upload: "+err.Error())
+			writeErr(w, "rejected_upload", "rejected upload: "+err.Error())
 		} else {
-			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+			writeErr(w, "deploy_failed", "deploy failed")
 		}
 		return
 	}
@@ -647,17 +677,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 		os.RemoveAll(staging)
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		if isLabelTaken(err) {
-			writeErr(w, http.StatusConflict, err.Error())
+			writeErr(w, "label_taken", err.Error())
 		} else {
 			cleanupPlaceholder()
-			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+			writeErr(w, "deploy_failed", "deploy failed")
 		}
 		return
 	}
 	if err := sites.ReplaceSite(s.cfg.DataDir, label, staging); err != nil {
 		os.RemoveAll(staging)
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
-		writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		writeErr(w, "deploy_failed", "deploy failed")
 		return
 	}
 	url := "https://" + label + "." + s.cfg.BaseDomain + "/"
@@ -684,9 +714,9 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 		mr, err := r.MultipartReader()
 		if err != nil {
 			if isBodyTooLarge(err) {
-				writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+				writeErr(w, "upload_too_large", "upload exceeds 30MB")
 			} else {
-				writeErr(w, http.StatusBadRequest, "bad multipart body")
+				writeErr(w, "bad_request", "bad multipart body")
 			}
 			return nil, err
 		}
@@ -697,9 +727,9 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 			}
 			if err != nil {
 				if isBodyTooLarge(err) {
-					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+					writeErr(w, "upload_too_large", "upload exceeds 30MB")
 				} else {
-					writeErr(w, http.StatusBadRequest, "bad multipart body")
+					writeErr(w, "bad_request", "bad multipart body")
 				}
 				return nil, err
 			}
@@ -708,14 +738,14 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 				n, err := io.Copy(io.Discard, io.LimitReader(part, limit))
 				if err != nil {
 					if isBodyTooLarge(err) {
-						writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+						writeErr(w, "upload_too_large", "upload exceeds 30MB")
 					} else {
-						writeErr(w, http.StatusBadRequest, "could not read upload")
+						writeErr(w, "bad_request", "could not read upload")
 					}
 					return nil, err
 				}
 				if n >= limit {
-					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+					writeErr(w, "upload_too_large", "upload exceeds 30MB")
 					return nil, errors.New("upload too large")
 				}
 				continue
@@ -723,29 +753,29 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 			buf, err := io.ReadAll(io.LimitReader(part, limit))
 			if err != nil {
 				if isBodyTooLarge(err) {
-					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+					writeErr(w, "upload_too_large", "upload exceeds 30MB")
 				} else {
-					writeErr(w, http.StatusBadRequest, "could not read upload")
+					writeErr(w, "bad_request", "could not read upload")
 				}
 				return nil, err
 			}
 			if int64(len(buf)) >= limit {
-				writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+				writeErr(w, "upload_too_large", "upload exceeds 30MB")
 				return nil, errors.New("upload too large")
 			}
 			return buf, nil
 		}
-		writeErr(w, http.StatusBadRequest, "no archive file in upload")
+		writeErr(w, "bad_request", "no archive file in upload")
 		return nil, errors.New("no archive part")
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	buf, err := io.ReadAll(r.Body)
 	if err != nil {
-		writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+		writeErr(w, "upload_too_large", "upload exceeds 30MB")
 		return nil, err
 	}
 	if int64(len(buf)) >= limit {
-		writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+		writeErr(w, "upload_too_large", "upload exceeds 30MB")
 		return nil, errors.New("upload too large")
 	}
 	return buf, nil
@@ -790,7 +820,7 @@ func (s *Server) labelFor(token, userID, project string) string {
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project string) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		log.Printf("delete failed user=%s project=%s label=%s cause=%v", "unknown", project, "", err)
 		return
 	}
@@ -798,23 +828,24 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 		return
 	}
 	if !validProject(project) {
-		writeErr(w, http.StatusBadRequest, "bad project name")
+		writeErr(w, "bad_project", "bad project name")
 		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "bad project name")
 		return
 	}
 	site, err := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not delete site")
+		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, project, "", err)
+		writeErr(w, "unknown", "could not delete site")
 		return
 	}
 	if site == nil {
-		writeErr(w, http.StatusNotFound, "no such project")
+		writeErr(w, "no_such_project", "no such project")
 		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "no such project")
 		return
 	}
 	if err := sites.RemoveSite(s.cfg.DataDir, site.Label); err != nil {
 		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, site.Project, site.Label, err)
-		writeErr(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeErr(w, "unknown", "delete failed")
 		return
 	}
 	log.Printf("delete user=%s project=%s label=%s", userID, site.Project, site.Label)
@@ -823,12 +854,12 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 
 func (s *Server) handleViews(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		return
 	}
 	views := s.metadb.RecentViews(token, userID, store.ViewReturn)
@@ -848,7 +879,7 @@ type favoriteRow struct {
 func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		return
 	}
 	if r.Method != http.MethodGet && !s.checkCSRF(w, r, token) {
@@ -876,21 +907,22 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 			Label string `json:"label"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
-			writeErr(w, http.StatusBadRequest, "bad request")
+			writeErr(w, "bad_request", "bad request")
 			return
 		}
 		if err := sites.ValidateLabel(body.Label); err != nil {
-			writeErr(w, http.StatusBadRequest, "bad label: "+err.Error())
+			writeErr(w, "bad_request", "bad label: "+err.Error())
 			return
 		}
 		// A viewer may favorite any preview they can open.
 		site := s.metadb.SiteByLabel(token, body.Label)
 		if site == nil {
-			writeErr(w, http.StatusNotFound, "unknown site")
+			writeErr(w, "unknown_site", "unknown site")
 			return
 		}
 		if err := s.metadb.AddFavorite(token, userID, body.Label); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
+			log.Printf("favorite add failed user=%s label=%s cause=%v", userID, body.Label, err)
+			writeErr(w, "unknown", "could not save favorite")
 			return
 		}
 		writeJSON(w, http.StatusOK, favoriteRow{
@@ -900,18 +932,18 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 			Project: site.Project,
 		})
 	default:
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 	}
 }
 
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "login required")
+		writeErr(w, "login_required", "login required")
 		return
 	}
 	if !s.checkCSRF(w, r, token) {
@@ -919,16 +951,17 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 	label := strings.TrimPrefix(r.URL.Path, "/api/favorites/")
 	if strings.Contains(label, "/") || sites.ValidateLabel(label) != nil {
-		writeErr(w, http.StatusBadRequest, "bad label")
+		writeErr(w, "bad_request", "bad label")
 		return
 	}
 	ok, err := s.metadb.RemoveFavorite(token, userID, label)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "could not remove favorite")
+		log.Printf("favorite remove failed user=%s label=%s cause=%v", userID, label, err)
+		writeErr(w, "unknown", "could not remove favorite")
 		return
 	}
 	if !ok {
-		writeErr(w, http.StatusNotFound, "no such favorite")
+		writeErr(w, "no_such_favorite", "no such favorite")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
@@ -942,28 +975,28 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 // guessable, and previews themselves are team-visible by design).
 func (s *Server) handleCaddyAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		writeErr(w, "method_not_allowed", "method not allowed")
 		return
 	}
 	domain, ok := normalizeHost(r.URL.Query().Get("domain"))
 	if !ok {
-		writeErr(w, http.StatusNotFound, "not a preview host")
+		writeErr(w, "not_found", "not a preview host")
 		return
 	}
 	label, ok := strings.CutSuffix(domain, "."+strings.ToLower(s.cfg.BaseDomain))
 	if !ok || label == "" || strings.Contains(label, ".") {
-		writeErr(w, http.StatusNotFound, "not a preview host")
+		writeErr(w, "not_found", "not a preview host")
 		return
 	}
 	if err := sites.ValidateLabel(label); err != nil {
-		writeErr(w, http.StatusNotFound, "bad label")
+		writeErr(w, "not_found", "bad label")
 		return
 	}
 	// Existence check only. The token is empty so the local store ignores
 	// it; the Supabase store falls back to its server-side key, which is
 	// correct here because any existing site may get a certificate.
 	if s.metadb.SiteByLabel("", label) == nil {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -1018,7 +1051,7 @@ func (s *Server) safeNext(raw string) string {
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	host, ok := normalizeHost(r.Host)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	if host != s.cfg.BaseDomain {
@@ -1040,7 +1073,7 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	host, ok := normalizeHost(r.Host)
 	if !ok {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	if host == s.cfg.BaseDomain {
@@ -1049,7 +1082,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 	label, ok := strings.CutSuffix(host, "."+s.cfg.BaseDomain)
 	if !ok || label == "" || strings.Contains(label, ".") {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	s.handlePreview(w, r, label)
@@ -1058,11 +1091,11 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	host, ok := normalizeHost(r.Host)
 	if !ok || host != s.cfg.BaseDomain {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	if r.URL.Path != "/" {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 		return
 	}
 	if _, _, err := s.tokenFor(r); err != nil {
@@ -1082,7 +1115,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	if err != nil {
 		host, ok := normalizeHost(r.Host)
 		if !ok {
-			writeErr(w, http.StatusNotFound, "unknown site")
+			writeErr(w, "unknown_site", "unknown site")
 			return
 		}
 		next := "https://" + host + r.URL.RequestURI()
@@ -1090,19 +1123,19 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 		return
 	}
 	if err := sites.ValidateLabel(label); err != nil {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	site := s.metadb.SiteByLabel(token, label)
 	if site == nil {
-		writeErr(w, http.StatusNotFound, "unknown site")
+		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
 	// Deny encoded traversal/dot tricks before Clean normalizes them away:
 	// %2e decodes to "." so /%2e%2e/secret would otherwise collapse to a
 	// legitimate-looking path and serve index.html with a recorded view.
 	if previewPathHasEncodedDot(r) {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 		return
 	}
 	root := sites.SiteDir(s.cfg.DataDir, label)
@@ -1118,13 +1151,13 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	// Deny dot segments anywhere in the path before touching disk.
 	for _, part := range strings.Split(rel, "/") {
 		if strings.HasPrefix(part, ".") {
-			writeErr(w, http.StatusNotFound, "not found")
+			writeErr(w, "not_found", "not found")
 			return
 		}
 	}
 	full := filepath.Join(root, filepath.FromSlash(rel))
 	if !strings.HasPrefix(full, root+string(filepath.Separator)) && full != root {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 		return
 	}
 	if info, err := os.Stat(full); err == nil {
@@ -1153,7 +1186,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 		}
 		return
 	}
-	writeErr(w, http.StatusNotFound, "not found")
+	writeErr(w, "not_found", "not found")
 }
 
 func isAssetExt(ext string) bool {
@@ -1187,13 +1220,13 @@ func previewPathHasEncodedDot(r *http.Request) bool {
 func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 	f, err := os.Open(full)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 		return
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || info.IsDir() {
-		writeErr(w, http.StatusNotFound, "not found")
+		writeErr(w, "not_found", "not found")
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
