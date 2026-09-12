@@ -94,6 +94,12 @@ func New(cfg Config) (*Server, error) {
 			return nil, fmt.Errorf("dev mode refused: base domain %q is not a test/local name (must end .test, or be localhost, or start 127./::1)", cfg.BaseDomain)
 		}
 	}
+	// Lowercase for case-insensitive DNS comparison; preview routing and
+	// safeNext compare against this normalized form.
+	cfg.BaseDomain = strings.ToLower(strings.TrimSpace(cfg.BaseDomain))
+	if !validBaseDomain(cfg.BaseDomain) {
+		return nil, fmt.Errorf("invalid base domain %q: want a DNS suffix (letters/digits/hyphens/dots, max 253 chars) or 127.0.0.1/localhost for dev", cfg.BaseDomain)
+	}
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	if cfg.DevNoAuth {
 		s.verifier = auth.NewDevVerifier("dev-user")
@@ -119,10 +125,16 @@ func New(cfg Config) (*Server, error) {
 		}
 		s.metadb = st
 	case "supabase":
-		if cfg.SupabaseURL == "" || cfg.SupabaseKey == "" {
+		key := cfg.SupabaseKey
+		if key == "" {
+			// Match ConfigFromEnv: the anon key works as the server-side
+			// key (leaning fully on RLS) so local/dev boots agree.
+			key = cfg.AnonKey
+		}
+		if cfg.SupabaseURL == "" || key == "" {
 			return nil, errors.New("supabase store needs SUPABASE_URL plus a server-side key")
 		}
-		s.metadb = store.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseKey)
+		s.metadb = store.NewSupabaseStore(cfg.SupabaseURL, key)
 	default:
 		return nil, fmt.Errorf("unknown store backend %q", cfg.StoreBackend)
 	}
@@ -774,7 +786,11 @@ func (s *Server) handleCaddyAsk(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	domain := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain")))
+	domain, ok := normalizeHost(r.URL.Query().Get("domain"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not a preview host")
+		return
+	}
 	label, ok := strings.CutSuffix(domain, "."+strings.ToLower(s.cfg.BaseDomain))
 	if !ok || label == "" || strings.Contains(label, ".") {
 		writeErr(w, http.StatusNotFound, "not a preview host")
@@ -804,19 +820,36 @@ func (s *Server) safeNext(raw string) string {
 	if raw == "" {
 		return "/"
 	}
+	// Browsers normalize backslashes to slashes, so reject them plus
+	// control chars and encoded separators/nulls in any candidate before
+	// allowing it, in both the relative and absolute branches below.
+	if strings.Contains(raw, "\\") {
+		return "/"
+	}
+	for _, c := range raw {
+		if c < 0x20 || c == 0x7f {
+			return "/"
+		}
+	}
+	lowered := strings.ToLower(raw)
+	if strings.Contains(lowered, "%5c") || strings.Contains(lowered, "%2f") || strings.Contains(lowered, "%00") {
+		return "/"
+	}
 	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
 		return raw
 	}
 	if strings.HasPrefix(raw, "https://") {
-		host := strings.TrimPrefix(raw, "https://")
-		if i := strings.IndexAny(host, "/?#"); i >= 0 {
-			host = host[:i]
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" {
+			return "/"
 		}
-		if strings.EqualFold(host, s.cfg.BaseDomain) {
-			// Strip any port or userinfo tricks before returning.
-			if strings.ContainsAny(host, "@:") {
-				return "/"
-			}
+		// Reject userinfo/ports explicitly before host equality: parsing
+		// keeps them out of Hostname, so checking after EqualFold could
+		// never fire.
+		if u.User != nil || u.Port() != "" || strings.Contains(u.Host, "@") || strings.Contains(u.Host, ":") {
+			return "/"
+		}
+		if strings.EqualFold(u.Hostname(), s.cfg.BaseDomain) {
 			return raw
 		}
 	}
@@ -824,7 +857,11 @@ func (s *Server) safeNext(raw string) string {
 }
 
 func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	host := hostOnly(r.Host)
+	host, ok := normalizeHost(r.Host)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "unknown site")
+		return
+	}
 	if host != s.cfg.BaseDomain {
 		// Deep-link return: preview hosts bounce to the central login with
 		// the original preview URL preserved for post-login return.
@@ -842,7 +879,11 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 
 // handleRoot routes the central dashboard versus preview subdomains.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	host := hostOnly(r.Host)
+	host, ok := normalizeHost(r.Host)
+	if !ok {
+		writeErr(w, http.StatusNotFound, "unknown site")
+		return
+	}
 	if host == s.cfg.BaseDomain {
 		s.handleDashboard(w, r)
 		return
@@ -856,6 +897,11 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	host, ok := normalizeHost(r.Host)
+	if !ok || host != s.cfg.BaseDomain {
+		writeErr(w, http.StatusNotFound, "unknown site")
+		return
+	}
 	if r.URL.Path != "/" {
 		writeErr(w, http.StatusNotFound, "not found")
 		return
@@ -875,7 +921,12 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label string) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
-		next := "https://" + hostOnly(r.Host) + r.URL.RequestURI()
+		host, ok := normalizeHost(r.Host)
+		if !ok {
+			writeErr(w, http.StatusNotFound, "unknown site")
+			return
+		}
+		next := "https://" + host + r.URL.RequestURI()
 		http.Redirect(w, r, "https://"+s.cfg.BaseDomain+"/login?next="+url.QueryEscape(next), http.StatusFound)
 		return
 	}
@@ -1000,13 +1051,116 @@ func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 }
 
 func hostOnly(hostport string) string {
-	// Preview hosts are plain DNS; strip a single :port if present.
-	if strings.Count(hostport, ":") == 1 {
-		if i := strings.LastIndex(hostport, ":"); i >= 0 {
-			return hostport[:i]
+	// Kept for compatibility; new code uses normalizeHost which also
+	// lowercases and validates bracketed IPv6.
+	if h, ok := normalizeHost(hostport); ok {
+		return h
+	}
+	return strings.ToLower(strings.TrimSpace(hostport))
+}
+
+// normalizeHost lowercases a Host header value and strips a single :port
+// or a [ipv6]:port bracket form. It reports false for anything else it
+// cannot parse explicitly: bare IPv6 with multiple colons, empty hosts,
+// empty or non-numeric ports, malformed brackets, or embedded spaces and
+// userinfo separators. Callers reject !ok with a 404.
+func normalizeHost(hostport string) (string, bool) {
+	h := strings.ToLower(strings.TrimSpace(hostport))
+	if h == "" {
+		return "", false
+	}
+	if strings.HasPrefix(h, "[") {
+		end := strings.Index(h, "]")
+		if end < 0 {
+			return "", false
+		}
+		host := h[1:end]
+		if host == "" || strings.ContainsAny(host, " \t\r\n/@") {
+			return "", false
+		}
+		rest := h[end+1:]
+		if rest == "" {
+			return host, true
+		}
+		if !strings.HasPrefix(rest, ":") {
+			return "", false
+		}
+		port := rest[1:]
+		if port == "" || !isNumericPort(port) {
+			return "", false
+		}
+		return host, true
+	}
+	switch strings.Count(h, ":") {
+	case 0:
+		if strings.ContainsAny(h, " \t\r\n/@") {
+			return "", false
+		}
+		return h, true
+	case 1:
+		i := strings.LastIndex(h, ":")
+		host, port := h[:i], h[i+1:]
+		if host == "" || port == "" || !isNumericPort(port) {
+			return "", false
+		}
+		if strings.ContainsAny(host, " \t\r\n/@") {
+			return "", false
+		}
+		return host, true
+	default:
+		// Bare IPv6 or garbage with multiple colons: reject explicitly
+		// instead of guessing which colon starts a port.
+		return "", false
+	}
+}
+
+func isNumericPort(p string) bool {
+	if p == "" || len(p) > 5 {
+		return false
+	}
+	for _, c := range p {
+		if c < '0' || c > '9' {
+			return false
 		}
 	}
-	return hostport
+	return true
+}
+
+// validBaseDomain reports whether d is usable as the cookie/route parent
+// domain: letters/digits/hyphens/dots only, no leading or trailing
+// hyphen/dot, no empty labels, no port, max 253 chars. 127.0.0.1 and
+// localhost stay allowed so dev on loopback keeps working; any other IP
+// is rejected because browsers drop cookie domains set to an IP.
+func validBaseDomain(d string) bool {
+	if d == "127.0.0.1" || d == "localhost" {
+		return true
+	}
+	if d == "" || len(d) > 253 {
+		return false
+	}
+	for _, c := range d {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '.' {
+			continue
+		}
+		return false
+	}
+	if strings.HasPrefix(d, "-") || strings.HasSuffix(d, "-") ||
+		strings.HasPrefix(d, ".") || strings.HasSuffix(d, ".") {
+		return false
+	}
+	for _, label := range strings.Split(d, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+	}
+	if ip := net.ParseIP(d); ip != nil {
+		return false
+	}
+	return true
 }
 
 // isLoopbackBind reports whether addr binds loopback only (127.0.0.1,
