@@ -1,0 +1,52 @@
+# Sample Caddy config for yodea.
+#
+# Copy the global `on_demand_tls` stanza plus the two site blocks below into
+# the real Caddyfile. No edits per deploy: new previews need no proxy changes.
+{
+	# Use the operator address for ACME registration.
+	email you@example.com
+
+	# yodea preview subdomains are created per deploy. Caddy asks yodead
+	# whether a hostname is a live preview before issuing its certificate,
+	# so new previews need no proxy edits. yodead is only reachable on
+	# the container network, so the ask endpoint is not public.
+	on_demand_tls {
+		ask http://yodead:8093/api/caddy-ask
+	}
+}
+
+# yodea private preview host (Go yodead in the `yodead` container):
+# central login plus dashboard on the apex, one subdomain per preview.
+# Caddy is the only public entry; yodead itself is never published.
+previews.example.com {
+	encode zstd gzip
+	log
+
+	header {
+		-Server
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+	}
+
+	reverse_proxy yodead:8093
+}
+
+# yodea previews: one wildcard block. Caddy asks yodead (ask endpoint
+# above) whether each hostname is a live preview before issuing its
+# certificate, so pushes need no proxy changes.
+*.previews.example.com {
+	tls {
+		on_demand
+	}
+
+	encode zstd gzip
+	log
+
+	header {
+		-Server
+		Referrer-Policy no-referrer
+		X-Content-Type-Options nosniff
+	}
+
+	reverse_proxy yodead:8093
+}

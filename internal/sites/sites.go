@@ -1,3 +1,15 @@
+// Package sites unpacks uploaded Vite dist archives into per-preview
+// directories and derives DNS-safe preview labels.
+//
+// Security model: uploaded code is static data only, never executed by the
+// server. ExtractDist rejects absolute paths, ".." escapes, symlinks,
+// hardlinks, device nodes, dotfiles, and oversized payloads before touching
+// the destination, and refuses archives without a top-level index.html.
+// Deploys swap atomically so readers never see a half-written preview.
+//
+// Run-safe note: in production the container runs as an unprivileged user
+// and only the data-only sites directory (DataDir/sites) is writable; the
+// code here additionally writes files 0644 / dirs 0755 with no exec bits.
 package sites
 
 import (
@@ -6,19 +18,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
-// Security caps. These guard abuse, not disk capacity: tarbombs of
-// highly compressible files can expand orders of magnitude.
+// Cheap abuse guards for the MVP (not capacity planning): tarbombs of
+// highly compressible files can expand orders of magnitude, so the expanded
+// cap is what matters.
 const (
-	MaxUploadBytes      = 30 << 20 // 30MB compressed per deploy
-	MaxExpandedBytes    = 150 << 20
-	MaxFiles            = 20000
-	MaxSingleFileBytes  = 25 << 20
+	MaxUploadBytes     = 30 << 20 // 30MB compressed per deploy
+	MaxExpandedBytes   = 150 << 20
+	MaxFiles           = 20000
+	MaxSingleFileBytes = 25 << 20
 )
 
 // ValidateLabel enforces DNS label rules for preview subdomains.
@@ -57,7 +70,9 @@ func Sanitize(s string) string {
 	return out
 }
 
-// LabelFor builds <userpart>-<project> within 63 chars.
+// LabelFor builds <userpart>-<project> within 63 chars. The user part is
+// preserved in full so distinct users keep distinct labels; only the
+// project tail is trimmed to fit. Existing short labels are unchanged.
 func LabelFor(userPart, project string) string {
 	p := Sanitize(project)
 	u := Sanitize(userPart)
@@ -66,7 +81,9 @@ func LabelFor(userPart, project string) string {
 		keep := 63 - len(u) - 1
 		if keep < 8 {
 			// user part wins for uniqueness; hard-trim project.
-			p = p[:8]
+			if len(p) > 8 {
+				p = p[:8]
+			}
 			label = u + "-" + p
 			if len(label) > 63 {
 				label = label[:63]
@@ -95,6 +112,193 @@ func collapse(s string) string {
 	return b.String()
 }
 
+// CheckProjectName is the single source of truth for project-name
+// validation: single path segment, bounded, no leading/trailing hyphen,
+// plus blank/dot-only and reserved-fallback rejection (names sanitizing
+// to "site" unless exactly "site"). Control characters are rejected (they
+// break tab-separated list output and enable terminal line injection) as
+// is leading/trailing whitespace. Both the CLI (client.CheckProject)
+// and the server (validProject) delegate here so a server-side tightening
+// cannot silently break old CLIs at deploy time.
+func CheckProjectName(raw string) error {
+	if raw == "" || len(raw) > 40 {
+		return fmt.Errorf("bad project name %q: must be 1-40 chars", raw)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("bad project name %q: must not be blank", raw)
+	}
+	if raw != strings.TrimSpace(raw) {
+		return fmt.Errorf("bad project name %q: must not have leading or trailing whitespace", raw)
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("bad project name %q: must not contain control characters", raw)
+		}
+	}
+	if strings.Trim(raw, ".") == "" {
+		return fmt.Errorf("bad project name %q: must not be dot-only", raw)
+	}
+	if strings.HasPrefix(raw, "-") || strings.HasSuffix(raw, "-") {
+		return fmt.Errorf("bad project name %q: must not start or end with a hyphen", raw)
+	}
+	if strings.ContainsAny(raw, "/\\?#") {
+		return fmt.Errorf("bad project name %q: must be a single path segment (no / \\ ? #)", raw)
+	}
+	if Sanitize(raw) == "site" && raw != "site" {
+		return fmt.Errorf("bad project name %q: resolves to reserved name %q", raw, "site")
+	}
+	return nil
+}
+
+// validationError marks input-validation failures (400). Infra/IO failures
+// (MkdirTemp, EACCES, ENOSPC, rename errors) are returned unwrapped so
+// callers map them to 500.
+type validationError struct {
+	msg   string
+	cause error
+}
+
+func (e *validationError) Error() string {
+	if e.cause != nil {
+		return e.msg + ": " + e.cause.Error()
+	}
+	return e.msg
+}
+
+func (e *validationError) Unwrap() error { return e.cause }
+
+func validationf(format string, args ...any) error {
+	return &validationError{msg: fmt.Sprintf(format, args...)}
+}
+
+func validationWrap(cause error, format string, args ...any) error {
+	return &validationError{msg: fmt.Sprintf(format, args...), cause: cause}
+}
+
+// IsValidationError reports whether err is an input-validation failure
+// (400). Anything else from extraction is infra/IO (500).
+func IsValidationError(err error) bool {
+	var ve *validationError
+	return errors.As(err, &ve)
+}
+
+func isDiskError(err error) bool {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return true
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return true
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		return true
+	}
+	return false
+}
+
+// SiteDir centralizes DataDir/sites/<label> path construction. All server
+// handlers must use this (plus ReplaceSite/RemoveSite/NewStagingDir) instead
+// of building the path by hand.
+func SiteDir(dataDir, label string) string {
+	return filepath.Join(dataDir, "sites", label)
+}
+
+func sitesRoot(dataDir string) string {
+	return filepath.Join(dataDir, "sites")
+}
+
+// NewStagingDir creates a unique staging dir under DataDir/sites for one
+// deploy. Each deploy gets its own staging dir so concurrent deploys for one
+// label never share a path.
+func NewStagingDir(dataDir string) (string, error) {
+	root := sitesRoot(dataDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, ".stage-*")
+}
+
+// CleanupLeftovers removes crashed staging (.stage-*) and backup (.old-*)
+// dirs left under DataDir/sites by interrupted deploys. Call it on startup
+// (server.New, after the store is open) so a crash between the two renames
+// in swapDir never leaves disk litter to accumulate. Only dot-prefixed
+// staging/backup names are removed; the live dest itself (sites/<label>)
+// is never touched. Staging is incomplete by definition and .old-* backups
+// are superseded once the new dest serves.
+func CleanupLeftovers(dataDir string) error {
+	root := sitesRoot(dataDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, ".stage-") && !strings.HasPrefix(name, ".old-") {
+			continue
+		}
+		// Extra guard: only dot-prefixed staging/backup names, never live dest.
+		if !strings.HasPrefix(name, ".") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// RemoveSite deletes a label's live files. It never touches staging dirs.
+func RemoveSite(dataDir, label string) error {
+	return os.RemoveAll(SiteDir(dataDir, label))
+}
+
+// ReplaceSite atomically swaps a staging dir into place as the label's live
+// files. The previous live dir (if any) moves aside to a unique backup path
+// so concurrent replaces never share a .old path.
+func ReplaceSite(dataDir, label, staging string) error {
+	return swapDir(SiteDir(dataDir, label), staging)
+}
+
+func swapDir(dest, staging string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.Rename(staging, dest); err != nil {
+				return err
+			}
+			return nil
+		}
+		return err
+	}
+	parent := filepath.Dir(dest)
+	tmp, err := os.MkdirTemp(parent, ".old-*")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	backup := tmp
+	if err := os.Rename(dest, backup); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		// Roll back on failure.
+		_ = os.Rename(backup, dest)
+		return err
+	}
+	_ = os.RemoveAll(backup)
+	return nil
+}
+
 // ExtractResult summarizes a deploy.
 type ExtractResult struct {
 	Files int
@@ -112,15 +316,44 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 	if maxFiles <= 0 {
 		maxFiles = MaxFiles
 	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return nil, err
+	}
 	staging, err := os.MkdirTemp(filepath.Dir(dest), ".stage-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(staging)
 
+	res, err := ExtractToStaging(tarGz, staging, maxExpanded, maxFiles)
+	if err != nil {
+		return nil, err
+	}
+	if err := swapDir(dest, staging); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// ExtractToStaging unpacks a gzipped tar into an existing staging dir
+// without touching the live destination. Callers Upsert metadata first, then
+// ReplaceSite to swap staging live. Validation failures return an error for
+// which IsValidationError is true (400); infra/IO failures return raw errors
+// (500).
+func ExtractToStaging(tarGz io.Reader, staging string, maxExpanded int64, maxFiles int) (*ExtractResult, error) {
+	if maxExpanded <= 0 {
+		maxExpanded = MaxExpandedBytes
+	}
+	if maxFiles <= 0 {
+		maxFiles = MaxFiles
+	}
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return nil, err
+	}
+
 	gz, err := gzip.NewReader(tarGz)
 	if err != nil {
-		return nil, fmt.Errorf("bad gzip: %w", err)
+		return nil, validationWrap(err, "bad gzip")
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
@@ -133,7 +366,7 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("bad tar: %w", err)
+			return nil, validationWrap(err, "bad tar")
 		}
 		name := filepath.ToSlash(hdr.Name)
 		name = strings.TrimPrefix(name, "./")
@@ -142,30 +375,24 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 		}
 		// Reject absolute paths and escapes before cleaning.
 		if filepath.IsAbs(hdr.Name) || strings.HasPrefix(name, "/") {
-			return nil, fmt.Errorf("rejected absolute path %q", hdr.Name)
+			return nil, validationf("rejected absolute path %q", hdr.Name)
 		}
 		clean := filepath.Clean(name)
-		if clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." {
-			return nil, fmt.Errorf("rejected escape %q", hdr.Name)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return nil, validationf("rejected escape %q", hdr.Name)
 		}
-		// Skip dotfiles and dot-directories: dist/ never needs them and
-		// they hide secrets like .env that must not be served.
-		skip := false
+		// Dotfiles and dot-directories are rejected: the brief requires
+		// deploys to REJECT dotfiles (400) rather than silently skipping,
+		// and dist/ never needs them; they hide secrets like .env that
+		// must not be served.
 		for _, part := range strings.Split(clean, string(filepath.Separator)) {
 			if strings.HasPrefix(part, ".") {
-				skip = true
-				break
+				return nil, validationf("rejected dotfile %q", hdr.Name)
 			}
-		}
-		if skip {
-			if hdr.Typeflag == tar.TypeReg || hdr.Typeflag == tar.TypeRegA {
-				_, _ = io.Copy(io.Discard, io.LimitReader(tr, MaxSingleFileBytes+1))
-			}
-			continue
 		}
 		target := filepath.Join(staging, clean)
 		if !strings.HasPrefix(target, staging+string(filepath.Separator)) && target != staging {
-			return nil, fmt.Errorf("rejected escape %q", hdr.Name)
+			return nil, validationf("rejected escape %q", hdr.Name)
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -174,11 +401,11 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			}
 		case tar.TypeReg, tar.TypeRegA:
 			if hdr.Size > MaxSingleFileBytes {
-				return nil, fmt.Errorf("file %q exceeds %d bytes", clean, MaxSingleFileBytes)
+				return nil, validationf("file %q exceeds %d bytes", clean, MaxSingleFileBytes)
 			}
 			res.Files++
 			if res.Files > maxFiles {
-				return nil, fmt.Errorf("archive exceeds %d files", maxFiles)
+				return nil, validationf("archive exceeds %d files", maxFiles)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
@@ -190,107 +417,27 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			n, err := io.Copy(f, io.LimitReader(tr, maxExpanded-total+1))
 			f.Close()
 			if err != nil {
-				return nil, err
+				if isDiskError(err) {
+					return nil, err
+				}
+				return nil, validationWrap(err, "bad tar data for %q", clean)
 			}
 			total += n
 			res.Bytes += n
 			if total > maxExpanded {
-				return nil, fmt.Errorf("archive expands past %d bytes", maxExpanded)
+				return nil, validationf("archive expands past %d bytes", maxExpanded)
 			}
 		default:
 			// Symlinks, hardlinks, devices, fifos: rejected. They enable
 			// path traversal and cross-user reads on shared hosting.
-			return nil, fmt.Errorf("rejected non-regular entry %q (type %c)", hdr.Name, hdr.Typeflag)
+			return nil, validationf("rejected non-regular entry %q (type %c)", hdr.Name, hdr.Typeflag)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(staging, "index.html")); err != nil {
-		return nil, errors.New("archive must contain a top-level index.html")
-	}
-	// Atomic swap: move old aside, move staging in, drop old.
-	old := dest + ".old"
-	os.RemoveAll(old)
-	if _, err := os.Stat(dest); err == nil {
-		if err := os.Rename(dest, old); err != nil {
-			return nil, err
-		}
-		defer os.RemoveAll(old)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(staging, dest); err != nil {
-		// Roll back on failure.
-		if _, err2 := os.Stat(old); err2 == nil {
-			_ = os.Rename(old, dest)
+		if os.IsNotExist(err) {
+			return nil, validationf("archive must contain a top-level index.html")
 		}
 		return nil, err
 	}
-	os.RemoveAll(old)
 	return res, nil
-}
-
-// PackDir creates a gzipped tar of srcDir for upload. It includes regular
-// files only, skips dotfiles to match ExtractDist, and skips node_modules.
-func PackDir(srcDir string, w io.Writer) (int, error) {
-	gz := gzip.NewWriter(w)
-	defer gz.Close()
-	tw := tar.NewWriter(gz)
-	defer tw.Close()
-	count := 0
-	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		base := filepath.Base(rel)
-		if strings.HasPrefix(base, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() && base == "node_modules" {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("refusing non-regular file %q", rel)
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		hdr := &tar.Header{
-			Name:    filepath.ToSlash(rel),
-			Mode:    0o644,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-			Format:  tar.FormatPAX,
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return err
-		}
-		if _, err := io.Copy(tw, f); err != nil {
-			return err
-		}
-		count++
-		if count > MaxFiles {
-			return fmt.Errorf("directory exceeds %d files", MaxFiles)
-		}
-		return nil
-	})
-	return count, err
 }

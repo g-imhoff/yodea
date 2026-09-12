@@ -1,0 +1,30 @@
+# yodead runtime image (sample).
+#
+# Build with entrypoint `/yodead` and args like:
+#   --addr 0.0.0.0:8093 --data-dir /data --domain previews.example.com
+# The binary and DataDir are host bind-mounts in a typical deploy; this
+# Dockerfile bakes the same layout into an image by copying a prebuilt
+# binary instead.
+#
+# Build the binary first (from the repo root):
+#   CGO_ENABLED=0 go build -o deploy/yodead ./cmd/yodead
+# Then build the image without touching the network beyond the cached base:
+#   docker build -f deploy/Dockerfile.yodead -t yodead .
+#
+# Notes:
+# - Base is debian:stable-slim and it is available locally; no RUN step
+#   needs the network.
+# - With CGO_ENABLED=0 the binary is static, so `FROM scratch` plus the same
+#   COPY/ENTRYPOINT also works. debian:stable-slim is kept here to provide
+#   a shell plus CA certificates for debugging.
+# - Run as an unprivileged user with only DataDir (/data) writable. To do
+#   that, run with `docker run --user <uid>:<gid>` and chown the host
+#   DataDir to match.
+FROM debian:stable-slim
+
+COPY deploy/yodead /yodead
+
+EXPOSE 8093
+
+ENTRYPOINT ["/yodead"]
+CMD ["--addr", "0.0.0.0:8093", "--data-dir", "/data", "--domain", "previews.example.com"]

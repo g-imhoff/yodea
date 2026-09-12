@@ -1,0 +1,5 @@
+# Local-only deploy config. Never commit.
+deploy/.env
+deploy/compose.yml
+# Build output
+deploy/yodead
