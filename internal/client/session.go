@@ -45,8 +45,9 @@ func SaveSession(s Session) error {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
 	}
-	// WriteFile leaves existing modes alone; enforce 0600 regardless.
-	return os.Chmod(path, 0o600)
+	// WriteFile leaves existing modes alone; enforce owner-only access.
+	// On unix this is Chmod 0600, on Windows an owner-only DACL.
+	return restrictSessionFile(path)
 }
 
 // LoadSession reads the persisted session, or an actionable login error.
@@ -57,7 +58,10 @@ func LoadSession() (Session, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Session{}, fmt.Errorf("not logged in (run 'yodea login' first)")
+		if os.IsNotExist(err) {
+			return Session{}, fmt.Errorf("not logged in (run 'yodea login' first)")
+		}
+		return Session{}, fmt.Errorf("read session file: %w", err)
 	}
 	var s Session
 	if err := json.Unmarshal(data, &s); err != nil || s.Token == "" || s.Server == "" {
