@@ -32,15 +32,18 @@ export function ThemeProvider({
 
   useEffect(() => {
     const root = window.document.documentElement
-    root.classList.remove("light", "dark")
     if (theme === "system") {
-      const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
-        .matches
-        ? "dark"
-        : "light"
-      root.classList.add(systemTheme)
-      return
+      const mql = window.matchMedia("(prefers-color-scheme: dark)")
+      const apply = (dark: boolean) => {
+        root.classList.remove("light", "dark")
+        root.classList.add(dark ? "dark" : "light")
+      }
+      apply(mql.matches)
+      const onChange = (event: MediaQueryListEvent) => apply(event.matches)
+      mql.addEventListener("change", onChange)
+      return () => mql.removeEventListener("change", onChange)
     }
+    root.classList.remove("light", "dark")
     root.classList.add(theme)
   }, [theme])
 
