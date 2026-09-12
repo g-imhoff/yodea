@@ -200,42 +200,54 @@ func (s *SupabaseStore) ListSites(token, userID string) []*Site {
 // DeleteSite removes one user's project metadata and returns the removed
 // row for disk cleanup. Orphaned favorite rows from other viewers are left
 // to read-time filtering (see package note). The DELETE requests its
-// representation and returns nil on zero rows (RLS denial or concurrent
-// delete) so the handler skips file cleanup on a no-op.
-func (s *SupabaseStore) DeleteSite(token, userID, project string) *Site {
+// representation and returns (nil, nil) on zero rows (RLS denial or
+// concurrent delete) so the handler skips file cleanup on a no-op. Transport
+// or request-build failures return (nil, err) so the handler can fail the
+// request instead of reporting success while the delete was lost.
+func (s *SupabaseStore) DeleteSite(token, userID, project string) (*Site, error) {
 	v := url.Values{}
 	v.Set("user_id", "eq."+userID)
 	v.Set("project", "eq."+project)
 	req, err := s.req(http.MethodGet, tableSites, q(v), token, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var found []Site
-	if err := s.do(req, &found); err != nil || len(found) == 0 {
-		return nil
+	if err := s.do(req, &found); err != nil {
+		return nil, err
+	}
+	if len(found) == 0 {
+		return nil, nil
 	}
 	site := found[0]
 	del, err := s.req(http.MethodDelete, tableSites, eq("label", site.Label), token, nil)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	del.Header.Set("Prefer", "return=representation")
 	var deleted []Site
-	if err := s.do(del, &deleted); err != nil || len(deleted) == 0 {
-		return nil
+	if err := s.do(del, &deleted); err != nil {
+		return nil, err
 	}
-	return &site
+	if len(deleted) == 0 {
+		return nil, nil
+	}
+	return &site, nil
 }
 
 // RecordView prepends a visit; the table is trimmed to ViewCap per viewer.
-func (s *SupabaseStore) RecordView(token, userID, label string) {
+// The initial insert error is returned; trim best-effort cleanup failures
+// are ignored so a successful view is not reported as failed.
+func (s *SupabaseStore) RecordView(token, userID, label string) error {
 	body := map[string]any{"user_id": userID, "label": label, "at": time.Now().UTC()}
 	req, err := s.req(http.MethodPost, tableSiteViews, "", token, body)
 	if err != nil {
-		return
+		return err
 	}
 	req.Header.Set("Prefer", "return=minimal")
-	_ = s.do(req, nil)
+	if err := s.do(req, nil); err != nil {
+		return err
+	}
 
 	v := url.Values{}
 	v.Set("user_id", "eq."+userID)
@@ -243,13 +255,13 @@ func (s *SupabaseStore) RecordView(token, userID, label string) {
 	v.Set("offset", fmt.Sprint(ViewCap))
 	list, err := s.req(http.MethodGet, tableSiteViews, q(v), token, nil)
 	if err != nil {
-		return
+		return nil
 	}
 	var old []struct {
 		ID int64 `json:"id"`
 	}
 	if err := s.do(list, &old); err != nil {
-		return
+		return nil
 	}
 	for _, row := range old {
 		del, err := s.req(http.MethodDelete, tableSiteViews,
@@ -259,6 +271,7 @@ func (s *SupabaseStore) RecordView(token, userID, label string) {
 		}
 		_ = s.do(del, nil)
 	}
+	return nil
 }
 
 // RecentViews returns personal history newest first, at most n entries.
@@ -308,19 +321,23 @@ func (s *SupabaseStore) AddFavorite(token, userID, label string) error {
 	return s.do(req, nil)
 }
 
-// RemoveFavorite drops one viewer's favorite; false means it wasn't there.
-func (s *SupabaseStore) RemoveFavorite(token, userID, label string) bool {
+// RemoveFavorite drops one viewer's favorite; (false, nil) means it wasn't
+// there. Transport failures return (false, err).
+func (s *SupabaseStore) RemoveFavorite(token, userID, label string) (bool, error) {
 	v := url.Values{}
 	v.Set("user_id", "eq."+userID)
 	v.Set("label", "eq."+label)
 	req, err := s.req(http.MethodDelete, tableFavorites, q(v), token, nil)
 	if err != nil {
-		return false
+		return false, err
 	}
 	req.Header.Set("Prefer", "return=representation")
 	var out []Favorite
-	if err := s.do(req, &out); err != nil || len(out) == 0 {
-		return false
+	if err := s.do(req, &out); err != nil {
+		return false, err
 	}
-	return true
+	if len(out) == 0 {
+		return false, nil
+	}
+	return true, nil
 }

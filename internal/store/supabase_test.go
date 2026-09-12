@@ -58,8 +58,8 @@ func TestSupabaseDeleteZeroRowsReturnsNil(t *testing.T) {
 	defer srv.Close()
 
 	s := NewSupabaseStore(srv.URL, "server-key")
-	if got := s.DeleteSite("viewer-jwt", "alice", "blog"); got != nil {
-		t.Fatalf("DeleteSite on 0-row delete = %+v, want nil (no file cleanup)", got)
+	if got, err := s.DeleteSite("viewer-jwt", "alice", "blog"); err != nil || got != nil {
+		t.Fatalf("DeleteSite on 0-row delete = (%+v,%v), want (nil,nil) (no file cleanup)", got, err)
 	}
 	if sawDeletePrefer != "return=representation" {
 		t.Fatalf("DELETE Prefer = %q, want return=representation", sawDeletePrefer)
