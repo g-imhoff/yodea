@@ -1,3 +1,5 @@
+import { useCallback, useState } from "react"
+
 import {
   HistoryIcon,
   InboxIcon,
@@ -7,12 +9,14 @@ import {
 } from "lucide-react"
 
 import {
+  AuthError,
   formatDateTime,
   previewUrl,
   type Favorite,
   type Site,
   type View,
 } from "@/lib/api"
+import type { ToggleFavoriteResult } from "@/lib/favorites"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { PreviewCard, type PreviewItem } from "@/components/preview-card"
 import { ListEmpty, ListError, ListLoading } from "@/components/view-state"
@@ -30,7 +34,9 @@ export interface DashboardData {
   viewsStatus: LoadStatus
   favorites: Favorite[]
   favStatus: LoadStatus
-  onToggleFavorite: (label: string) => void
+  onToggleFavorite: (
+    label: string
+  ) => void | Promise<void | ToggleFavoriteResult>
   onRetrySites: () => void
   onRetryViews: () => void
   onRetryFavorites: () => void
@@ -70,8 +76,39 @@ export function Dashboard(props: DashboardData) {
   const favoriteLabels = new Set(favorites.map((f) => f.label))
   // Favorite hrefs use the protocol-aware client preview URL so plain-http
   // dev stays reachable; fav.link is server-built https metadata and is
-  // intentionally unused here. Deleted previews are already dropped
-  // server-side, so this list is rendered as returned.
+  // intentionally unused here.
+
+  // Last failed star toggle (per-label). Cleared on the next attempt so a
+  // flaky network shows a visible error with retry instead of leaving the
+  // star silently unfilled. AuthError stays silent here; favorites.ts already
+  // handed control to the login phase.
+  const [favToggleError, setFavToggleError] = useState<{ label: string } | null>(
+    null
+  )
+
+  const handleToggleFavorite = useCallback(
+    async (label: string) => {
+      setFavToggleError(null)
+      try {
+        const result = await onToggleFavorite(label)
+        if (result && !result.ok) {
+          if (result.error instanceof AuthError) return
+          setFavToggleError({ label })
+        }
+      } catch (err) {
+        if (err instanceof AuthError) return
+        setFavToggleError({ label })
+      }
+    },
+    [onToggleFavorite]
+  )
+
+  const handleRetryToggle = useCallback(() => {
+    if (!favToggleError) return
+    void handleToggleFavorite(favToggleError.label)
+  }, [favToggleError, handleToggleFavorite])
+  // Deleted previews are already dropped server-side, so this list is
+  // rendered as returned.
   const favoriteItems: PreviewItem[] = favorites.map((fav) => ({
     label: fav.label,
     title: fav.project,
@@ -87,7 +124,7 @@ export function Dashboard(props: DashboardData) {
             key={item.label}
             item={item}
             favorite={favoriteLabels.has(item.label)}
-            onToggleFavorite={onToggleFavorite}
+            onToggleFavorite={handleToggleFavorite}
           />
         ))}
       </div>
@@ -115,6 +152,12 @@ export function Dashboard(props: DashboardData) {
         </Button>
       </header>
       <Separator />
+      {favToggleError && (
+        <ListError
+          message={`Could not save ${favToggleError.label} to favorites. Check your connection and try again.`}
+          onRetry={handleRetryToggle}
+        />
+      )}
       <Tabs defaultValue={initialView}>
         <TabsList>
           <TabsTrigger value="previews">
