@@ -16,6 +16,13 @@ import { Spinner } from "@/components/ui/spinner"
 
 const FAILURE_TEXT = "Login failed. Check email and password."
 
+const DEV_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
+
+function isEmailShape(value: string): boolean {
+  const at = value.indexOf("@")
+  return at > 0 && at < value.length - 1
+}
+
 export function LoginPage({
   next,
   onLoggedIn,
@@ -31,10 +38,15 @@ export function LoginPage({
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
     if (pending) return
+    const value = email.trim()
+    if (!DEV_NAME_RE.test(value) && !isEmailShape(value)) {
+      setFailed(true)
+      return
+    }
     setPending(true)
     setFailed(false)
     try {
-      await login(email, password)
+      await login(value, password)
       onLoggedIn(next)
     } catch {
       setFailed(true)
@@ -56,7 +68,8 @@ export function LoginPage({
                 <FieldLabel htmlFor="yodea-email">Email</FieldLabel>
                 <Input
                   id="yodea-email"
-                  type="email"
+                  type="text"
+                  inputMode="email"
                   autoComplete="username"
                   required
                   value={email}
