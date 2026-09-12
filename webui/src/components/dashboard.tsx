@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import {
   HistoryIcon,
@@ -20,7 +20,23 @@ import type { ToggleFavoriteResult } from "@/lib/favorites"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { PreviewCard, type PreviewItem } from "@/components/preview-card"
 import { ListEmpty, ListError, ListLoading } from "@/components/view-state"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
 import { Separator } from "@/components/ui/separator"
 import { Spinner } from "@/components/ui/spinner"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
@@ -43,16 +59,6 @@ export interface DashboardData {
   onLogout: () => void
   loggingOut: boolean
   initialView?: string
-}
-
-function siteItem(site: Site): PreviewItem {
-  return {
-    label: site.label,
-    title: site.project,
-    description: `push with: yodea push --project ${site.project}`,
-    href: previewUrl(site.label),
-    badge: `${site.files} ${site.files === 1 ? "file" : "files"}`,
-  }
 }
 
 export function Dashboard(props: DashboardData) {
@@ -85,6 +91,13 @@ export function Dashboard(props: DashboardData) {
   const [favToggleError, setFavToggleError] = useState<{ label: string } | null>(
     null
   )
+
+  const favErrorRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (favToggleError) {
+      favErrorRef.current?.focus()
+    }
+  }, [favToggleError])
 
   const handleToggleFavorite = useCallback(
     async (label: string) => {
@@ -131,9 +144,68 @@ export function Dashboard(props: DashboardData) {
     )
   }
 
+  function renderSiteCards(siteList: Site[]) {
+    return (
+      <div className="flex flex-col gap-3">
+        {siteList.map((site) => {
+          const favorite = favoriteLabels.has(site.label)
+          const href = previewUrl(site.label)
+          return (
+            <Card key={site.label}>
+              <CardHeader>
+                <CardTitle>
+                  <a
+                    href={href}
+                    className="underline-offset-4 hover:underline"
+                  >
+                    {site.project}
+                  </a>
+                </CardTitle>
+                <CardDescription>
+                  push with:{" "}
+                  <code>yodea push --project {site.project}</code>
+                </CardDescription>
+                <CardAction>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    type="button"
+                    aria-pressed={favorite}
+                    aria-label={
+                      favorite
+                        ? `Remove ${site.label} from favorites`
+                        : `Save ${site.label} to favorites`
+                    }
+                    onClick={() => handleToggleFavorite(site.label)}
+                  >
+                    <StarIcon
+                      data-icon="inline-start"
+                      fill={favorite ? "currentColor" : "none"}
+                    />
+                  </Button>
+                </CardAction>
+              </CardHeader>
+              <CardContent className="flex flex-wrap items-center gap-2">
+                <Badge variant="secondary">
+                  {site.files} {site.files === 1 ? "file" : "files"}
+                </Badge>
+                <a
+                  href={href}
+                  className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                >
+                  Open preview
+                </a>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+    )
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 p-4">
-      <header className="flex items-center gap-2">
+      <header className="flex flex-wrap items-center gap-2">
         <h1 className="text-lg font-medium">yodea</h1>
         <div className="flex-1" />
         <ThemeToggle />
@@ -142,25 +214,30 @@ export function Dashboard(props: DashboardData) {
           type="button"
           disabled={loggingOut}
           onClick={onLogout}
+          aria-label={loggingOut ? "Logging out" : "Log out"}
         >
           {loggingOut ? (
             <Spinner data-icon="inline-start" />
           ) : (
             <LogOutIcon data-icon="inline-start" />
           )}
-          {loggingOut ? "Logging out" : "Log out"}
+          <span className="hidden sm:inline">
+            {loggingOut ? "Logging out" : "Log out"}
+          </span>
         </Button>
       </header>
       <Separator />
       {favToggleError && (
-        <ListError
-          title="Could not save favorite"
-          message={`Could not save ${favToggleError.label} to favorites. Check your connection and try again.`}
-          onRetry={handleRetryToggle}
-        />
+        <div ref={favErrorRef} tabIndex={-1} aria-live="polite">
+          <ListError
+            title="Could not save favorite"
+            message={`Could not save ${favToggleError.label} to favorites. Check your connection and try again.`}
+            onRetry={handleRetryToggle}
+          />
+        </div>
       )}
       <Tabs defaultValue={initialView}>
-        <TabsList>
+        <TabsList className="w-full max-w-full overflow-x-auto md:w-fit">
           <TabsTrigger value="previews">
             <LayoutGridIcon data-icon="inline-start" />
             My previews
@@ -178,19 +255,25 @@ export function Dashboard(props: DashboardData) {
           {sitesStatus === "loading" && <ListLoading label="Loading my previews" />}
           {sitesStatus === "error" && (
             <ListError
-              message="My previews are unavailable right now."
+              message="My previews is unavailable right now."
               onRetry={onRetrySites}
             />
           )}
           {sitesStatus === "ready" &&
             (sites.length === 0 ? (
-              <ListEmpty
-                icon={<InboxIcon />}
-                title="Nothing pushed yet"
-                description="Run yodea init, then yodea push."
-              />
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <InboxIcon />
+                  </EmptyMedia>
+                  <EmptyTitle>Nothing pushed yet</EmptyTitle>
+                  <EmptyDescription>
+                    Run <code>yodea init</code>, then <code>yodea push</code>.
+                  </EmptyDescription>
+                </EmptyHeader>
+              </Empty>
             ) : (
-              renderCards(sites.map(siteItem))
+              renderSiteCards(sites)
             ))}
         </TabsContent>
         <TabsContent value="viewed">
@@ -199,7 +282,7 @@ export function Dashboard(props: DashboardData) {
           )}
           {viewsStatus === "error" && (
             <ListError
-              message="Recently viewed previews are unavailable right now."
+              message="Recently viewed is unavailable right now."
               onRetry={onRetryViews}
             />
           )}
@@ -208,7 +291,7 @@ export function Dashboard(props: DashboardData) {
               <ListEmpty
                 icon={<HistoryIcon />}
                 title="Nothing viewed yet"
-                description="Previews you open will show up here."
+                description="Previews you open will show up here. Open one from My previews."
               />
             ) : (
               renderCards(
@@ -225,7 +308,7 @@ export function Dashboard(props: DashboardData) {
           {favStatus === "loading" && <ListLoading label="Loading favorites" />}
           {favStatus === "error" && (
             <ListError
-              message="Favorites are unavailable right now."
+              message="Favorites is unavailable right now."
               onRetry={onRetryFavorites}
             />
           )}
@@ -234,7 +317,7 @@ export function Dashboard(props: DashboardData) {
               <ListEmpty
                 icon={<StarIcon />}
                 title="No favorites yet"
-                description="Flag a preview with the star to find it back here."
+                description="Flag a preview with the star to find it back here. Find one in My previews."
               />
             ) : (
               renderCards(favoriteItems)
