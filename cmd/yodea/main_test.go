@@ -274,3 +274,48 @@ func TestPushQuotesHostileProjectAndURL(t *testing.T) {
 		t.Fatalf("quoted push output should be one line, got %q", out)
 	}
 }
+
+func TestLoginQuotesHostileIdentity(t *testing.T) {
+	isolateSession(t)
+	t.Setenv("YODEA_PASSWORD", "secret")
+	hostileWho := "evil\tuser\ninject"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "yodea_session", Value: "tok"})
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"user_id":%q}`, hostileWho)
+	}))
+	defer srv.Close()
+	out, err := captureStdout(t, func() error { return cmdLogin(srv.URL, []string{"--email", "a@b.c"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantWho := fmt.Sprintf("%q", hostileWho)
+	wantServer := fmt.Sprintf("%q", srv.URL)
+	if !strings.Contains(out, wantWho) {
+		t.Fatalf("login output should quote identity as %s, got %q", wantWho, out)
+	}
+	if !strings.Contains(out, wantServer) {
+		t.Fatalf("login output should quote server as %s, got %q", wantServer, out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("quoted login output should be one line, got %q", out)
+	}
+}
+
+func TestInitQuotesHostileDir(t *testing.T) {
+	hostileDir := filepath.Join(t.TempDir(), "evil\tdir\ninject")
+	out, err := captureStdout(t, func() error { return cmdInit([]string{"--dir", hostileDir, "demo"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir := fmt.Sprintf("%q", hostileDir)
+	if !strings.Contains(out, `"demo"`) {
+		t.Fatalf("init output should quote project, got %q", out)
+	}
+	if !strings.Contains(out, wantDir) {
+		t.Fatalf("init output should quote dir as %s, got %q", wantDir, out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("quoted init output should be one line, got %q", out)
+	}
+}
