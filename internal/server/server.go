@@ -840,7 +840,28 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "bad project name")
 		return
 	}
-	site, err := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
+	sanitized := sites.Sanitize(project)
+	// Files first, then the catalog row: a disk failure leaves the row
+	// so the user can retry instead of orphaning files with no record.
+	var label, storedProject string
+	for _, cand := range s.metadb.ListSites(token, userID) {
+		if cand.Project == sanitized {
+			label = cand.Label
+			storedProject = cand.Project
+			break
+		}
+	}
+	if label == "" {
+		writeErr(w, "no_such_project", "no such project")
+		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "no such project")
+		return
+	}
+	if err := sites.RemoveSite(s.cfg.DataDir, label); err != nil {
+		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, storedProject, label, err)
+		writeErr(w, "unknown", "delete failed")
+		return
+	}
+	site, err := s.metadb.DeleteSite(token, userID, sanitized)
 	if err != nil {
 		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, project, "", err)
 		writeErr(w, "unknown", "could not delete site")
@@ -849,11 +870,6 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 	if site == nil {
 		writeErr(w, "no_such_project", "no such project")
 		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "no such project")
-		return
-	}
-	if err := sites.RemoveSite(s.cfg.DataDir, site.Label); err != nil {
-		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, site.Project, site.Label, err)
-		writeErr(w, "unknown", "delete failed")
 		return
 	}
 	log.Printf("delete user=%s project=%s label=%s", userID, site.Project, site.Label)
