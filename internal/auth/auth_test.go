@@ -182,3 +182,57 @@ func TestVerifyClockSkewLeeway(t *testing.T) {
 		t.Fatal("token 60s past exp accepted")
 	}
 }
+func TestUserPartDistinguishesLongNames(t *testing.T) {
+	a := UserPart("dev-alice-long-x")
+	b := UserPart("dev-alice-long-y")
+	if a == b {
+		t.Fatalf("long dev users collide: %q", a)
+	}
+	if len(a) > 20 || len(b) > 20 {
+		t.Fatalf("user parts exceed 20 chars: %q %q", a, b)
+	}
+}
+
+func TestUserPartDistinguishesUUIDPrefixPair(t *testing.T) {
+	u1 := "123e4567-e89b-12d3-a456-426614174000"
+	u2 := "123e4567-e89c-12d3-a456-426614174000"
+	p1, p2 := UserPart(u1), UserPart(u2)
+	if p1 == p2 {
+		t.Fatalf("UUID-like users collide: %q for %q vs %q", p1, u1, u2)
+	}
+	if len(p1) > 20 || len(p2) > 20 {
+		t.Fatalf("user parts exceed 20 chars: %q %q", p1, p2)
+	}
+}
+
+func TestUserPartBudgetAndShape(t *testing.T) {
+	long := UserPart("abcdefghijklmnopqrstuvwxyz-0123456789")
+	if len(long) > 20 {
+		t.Fatalf("user part too long: %q (%d)", long, len(long))
+	}
+	if strings.HasPrefix(long, "-") || strings.HasSuffix(long, "-") {
+		t.Fatalf("user part has edge hyphen: %q", long)
+	}
+	// Truncation must not leave a trailing hyphen.
+	trimmed := UserPart(strings.Repeat("a", 19) + "-bbb")
+	if strings.HasSuffix(trimmed, "-") {
+		t.Fatalf("truncated part has trailing hyphen: %q", trimmed)
+	}
+	if len(trimmed) > 20 {
+		t.Fatalf("trimmed part too long: %q", trimmed)
+	}
+	for _, tc := range []string{"", "---", "!!!"} {
+		if got := UserPart(tc); got == "" || strings.HasPrefix(got, "-") || strings.HasSuffix(got, "-") {
+			t.Fatalf("UserPart(%q) = %q, want safe fallback", tc, got)
+		}
+	}
+	for _, id := range []string{"Dev_Alice.Long-X", "123E4567-E89B-xyz"} {
+		got := UserPart(id)
+		for _, r := range got {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' {
+				continue
+			}
+			t.Fatalf("UserPart(%q) = %q has unsafe rune %q", id, got, r)
+		}
+	}
+}

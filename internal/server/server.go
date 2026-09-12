@@ -552,7 +552,9 @@ func isBodyTooLarge(err error) bool {
 
 // labelFor reuses the author's existing label for the same project so
 // redeploys overwrite. New projects claim LabelFor(user, project),
-// suffixed on collision with another author's label.
+// suffixed on collision with another author's label. The suffix range runs
+// to 999 with 63-char truncation of the suffixed candidate; genuine
+// exhaustion still falls through to base so UpsertSite returns 409.
 func (s *Server) labelFor(token, userID, project string) string {
 	for _, site := range s.metadb.ListSites(token, userID) {
 		if site.Project == project {
@@ -563,10 +565,15 @@ func (s *Server) labelFor(token, userID, project string) string {
 	if other := s.metadb.SiteByLabel(token, base); other == nil {
 		return base
 	}
-	for n := 2; n <= 20; n++ {
-		candidate := fmt.Sprintf("%s-%d", base, n)
+	for n := 2; n <= 999; n++ {
+		suffix := fmt.Sprintf("-%d", n)
+		candidate := base + suffix
 		if len(candidate) > 63 {
-			candidate = base[:63-len(fmt.Sprintf("-%d", n))] + fmt.Sprintf("-%d", n)
+			trunc := strings.TrimRight(base[:63-len(suffix)], "-")
+			if trunc == "" {
+				trunc = base[:63-len(suffix)]
+			}
+			candidate = trunc + suffix
 		}
 		if other := s.metadb.SiteByLabel(token, candidate); other == nil {
 			return candidate

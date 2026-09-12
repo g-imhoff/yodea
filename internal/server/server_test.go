@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/g-imhoff/yodea/internal/auth"
 	"github.com/g-imhoff/yodea/internal/sites"
+	"github.com/g-imhoff/yodea/internal/store"
 )
 
 const testDomain = "previews.example.test"
@@ -546,4 +548,78 @@ func TestValidProjectRejectsBlankDotOnlyAndFallback(t *testing.T) {
 func jsonQuote(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestLabelSuffixBeyond20(t *testing.T) {
+	s := newTestServer(t)
+	project := "blog"
+	baseUser := "collision-user"
+	basePart := auth.UserPart(baseUser)
+	base := sites.LabelFor(basePart, project)
+	// Occupy base plus -2..-21 with distinct colliding users. Trailing
+	// punctuation trims away, so every ID shares one UserPart.
+	for i := 0; i < 21; i++ {
+		var label string
+		if i == 0 {
+			label = base
+		} else {
+			label = fmt.Sprintf("%s-%d", base, i+1)
+		}
+		uid := baseUser + strings.Repeat("!", i)
+		if auth.UserPart(uid) != basePart {
+			t.Fatalf("setup user %q maps to %q, want %q", uid, auth.UserPart(uid), basePart)
+		}
+		if err := s.metadb.UpsertSite("", &store.Site{
+			UserID:  uid,
+			Project: fmt.Sprintf("occupy-%d", i),
+			Label:   label,
+		}); err != nil {
+			t.Fatalf("occupy %q: %v", label, err)
+		}
+	}
+	newcomer := baseUser + strings.Repeat("#", 22)
+	if auth.UserPart(newcomer) != basePart {
+		t.Fatalf("newcomer maps to %q, want %q", auth.UserPart(newcomer), basePart)
+	}
+	got := s.labelFor("", newcomer, project)
+	want := fmt.Sprintf("%s-%d", base, 22)
+	if got != want {
+		t.Fatalf("suffix beyond 20 = %q, want %q", got, want)
+	}
+	if err := sites.ValidateLabel(got); err != nil {
+		t.Fatalf("suffixed label invalid: %v", err)
+	}
+}
+
+func TestLabelSuffixLongBaseFits63(t *testing.T) {
+	s := newTestServer(t)
+	baseUser := "edge-user"
+	basePart := auth.UserPart(baseUser)
+	longProject := strings.Repeat("p", 60)
+	base := sites.LabelFor(basePart, longProject)
+	if len(base) != 63 {
+		t.Fatalf("setup base len = %d (%q), want 63", len(base), base)
+	}
+	occupant := baseUser + "!"
+	if err := s.metadb.UpsertSite("", &store.Site{
+		UserID:  occupant,
+		Project: "other",
+		Label:   base,
+	}); err != nil {
+		t.Fatalf("occupy base: %v", err)
+	}
+	newcomer := baseUser + "!!"
+	got := s.labelFor("", newcomer, longProject)
+	if got == base {
+		t.Fatalf("long-base collision did not suffix: %q", got)
+	}
+	if len(got) > 63 {
+		t.Fatalf("suffixed long base too long (%d): %q", len(got), got)
+	}
+	if err := sites.ValidateLabel(got); err != nil {
+		t.Fatalf("suffixed long base invalid: %v", err)
+	}
+	if !strings.HasSuffix(got, "-2") {
+		t.Fatalf("suffixed long base = %q, want suffix -2", got)
+	}
 }

@@ -151,3 +151,38 @@ func TestLabelForFits63(t *testing.T) {
 		t.Fatalf("label invalid: %v", err)
 	}
 }
+
+func TestLabelForKeepsCommonShape(t *testing.T) {
+	if got := LabelFor("alice", "blog"); got != "alice-blog" {
+		t.Fatalf("common shape = %q, want %q", got, "alice-blog")
+	}
+}
+
+func TestLabelForDistinguishesUUIDLikeUsers(t *testing.T) {
+	// Simulate post-UserPart handles: same 12-char prefix, distinct by 20.
+	u1 := "123e4567-e89b-12d3-a"
+	u2 := "123e4567-e89c-12d3-a"
+	l1 := LabelFor(u1, "blog")
+	l2 := LabelFor(u2, "blog")
+	if l1 == l2 {
+		t.Fatalf("UUID-like users collide: %q for %q vs %q", l1, u1, u2)
+	}
+}
+
+func TestLabelForLongProjectDistinctUsers(t *testing.T) {
+	for _, project := range []string{strings.Repeat("p", 40), strings.Repeat("p", 100)} {
+		l1 := LabelFor("dev-alice-long-x", project)
+		l2 := LabelFor("dev-alice-long-y", project)
+		if l1 == l2 {
+			t.Fatalf("project len %d: distinct users collapse to %q", len(project), l1)
+		}
+		for _, lbl := range []string{l1, l2} {
+			if len(lbl) > 63 {
+				t.Fatalf("label too long (%d): %q", len(lbl), lbl)
+			}
+			if err := ValidateLabel(lbl); err != nil {
+				t.Fatalf("label invalid: %q: %v", lbl, err)
+			}
+		}
+	}
+}
