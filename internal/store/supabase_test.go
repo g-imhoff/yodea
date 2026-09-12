@@ -530,3 +530,126 @@ func TestListFavoritesDeleteParity(t *testing.T) {
 		t.Fatalf("supabase favorites after delete = %+v, want empty (orphan filtered)", got)
 	}
 }
+
+// Regression for the R2 upsert race: two writers can both pass the
+// fetchSiteByLabel precheck, then the merge-duplicates POST returns a row
+// while the stored owner belongs to someone else. The second writer must
+// get `label is taken`, never success, so the server never swaps the
+// victim's files.
+func TestSupabaseUpsertOwnerGuardAfterPost(t *testing.T) {
+	t.Run("returnedRowOwnerMismatch", func(t *testing.T) {
+		gets := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet {
+				gets++
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			if r.Method == http.MethodPost {
+				// POST looks like success but returns the victim's row.
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"alice","project":"a","files":1,"bytes":2}]`))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}))
+		defer srv.Close()
+
+		s := NewSupabaseStore(srv.URL, "server-key")
+		err := s.UpsertSite("viewer-jwt", &Site{UserID: "bob", Project: "b", Label: "shared"})
+		if err == nil || !strings.Contains(err.Error(), "label is taken") {
+			t.Fatalf("UpsertSite on returned-row owner mismatch = %v, want label is taken", err)
+		}
+		if gets != 1 {
+			t.Fatalf("precheck GETs = %d, want 1 (returned-row guard rejects before re-read)", gets)
+		}
+	})
+
+	t.Run("storedRowOwnerMismatch", func(t *testing.T) {
+		gets := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet {
+				gets++
+				if gets == 1 {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				// Post-write re-read: stored owner is the victim.
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"alice","project":"a","files":1,"bytes":2}]`))
+				return
+			}
+			if r.Method == http.MethodPost {
+				// POST representation looks like the caller's own row.
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"bob","project":"b","files":0,"bytes":0}]`))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}))
+		defer srv.Close()
+
+		s := NewSupabaseStore(srv.URL, "server-key")
+		err := s.UpsertSite("viewer-jwt", &Site{UserID: "bob", Project: "b", Label: "shared"})
+		if err == nil || !strings.Contains(err.Error(), "label is taken") {
+			t.Fatalf("UpsertSite on stored-row owner mismatch = %v, want label is taken", err)
+		}
+		if gets != 2 {
+			t.Fatalf("GETs = %d, want 2 (precheck plus post-write re-read)", gets)
+		}
+	})
+
+	t.Run("successWhenOwnerMatches", func(t *testing.T) {
+		gets := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet {
+				gets++
+				if gets == 1 {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"bob","project":"b","files":0,"bytes":0}]`))
+				return
+			}
+			if r.Method == http.MethodPost {
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"bob","project":"b","files":0,"bytes":0}]`))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}))
+		defer srv.Close()
+
+		s := NewSupabaseStore(srv.URL, "server-key")
+		if err := s.UpsertSite("viewer-jwt", &Site{UserID: "bob", Project: "b", Label: "shared"}); err != nil {
+			t.Fatalf("UpsertSite on owner match = %v, want nil", err)
+		}
+	})
+
+	t.Run("rereadErrorAborts", func(t *testing.T) {
+		gets := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method == http.MethodGet {
+				gets++
+				if gets == 1 {
+					_, _ = w.Write([]byte(`[]`))
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"boom"}`))
+				return
+			}
+			if r.Method == http.MethodPost {
+				_, _ = w.Write([]byte(`[{"label":"shared","user_id":"bob","project":"b"}]`))
+				return
+			}
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}))
+		defer srv.Close()
+
+		s := NewSupabaseStore(srv.URL, "server-key")
+		if err := s.UpsertSite("viewer-jwt", &Site{UserID: "bob", Project: "b", Label: "shared"}); err == nil {
+			t.Fatal("UpsertSite on re-read error = nil, want error (never success)")
+		}
+	})
+}

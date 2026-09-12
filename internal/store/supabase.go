@@ -241,7 +241,11 @@ func isConflictError(err error) bool {
 // aborts on read errors, and genuine write conflicts (409/duplicate, or a
 // zero-row write that re-reads as another owner's label) map to the exact
 // `label is taken` string the local backend returns so callers see one
-// contract under concurrent deploy races.
+// contract under concurrent deploy races. The successful-write path is
+// owner-guarded too: a merge-duplicates POST can return another owner's
+// row while looking like success, so a returned row owned by someone else
+// plus a post-write re-read whose stored user_id differs from the caller
+// both map to `label is taken` instead of success.
 func (s *SupabaseStore) UpsertSite(token string, site *Site) error {
 	if site.Label == "" || site.UserID == "" || site.Project == "" {
 		return fmt.Errorf("label, user, and project are required")
@@ -287,6 +291,24 @@ func (s *SupabaseStore) UpsertSite(token string, site *Site) error {
 		} else if ferr != nil {
 			return ferr
 		}
+		return fmt.Errorf("supabase upsert returned no rows")
+	}
+	// Owner-guarded write: two writers can both pass the precheck, and the
+	// merge-duplicates POST can then return another owner's row while
+	// looking like success. Reject a returned row owned by someone else,
+	// then re-read the stored row and reject when it is owned by someone
+	// else. A failed re-read aborts instead of reporting success.
+	if len(out) > 0 && out[0].UserID != "" && out[0].UserID != site.UserID {
+		return fmt.Errorf("label is taken")
+	}
+	stored, ferr := s.fetchSiteByLabel(token, site.Label)
+	if ferr != nil {
+		return ferr
+	}
+	if stored != nil && stored.UserID != site.UserID {
+		return fmt.Errorf("label is taken")
+	}
+	if stored == nil {
 		return fmt.Errorf("supabase upsert returned no rows")
 	}
 	return nil
