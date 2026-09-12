@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/g-imhoff/yodea/internal/auth"
+	"github.com/g-imhoff/yodea/internal/sites"
 )
 
 const testDomain = "previews.example.test"
@@ -377,6 +378,47 @@ func TestMultipartDeploy(t *testing.T) {
 		devToken(t, "alice@example.com"), &buf, mw.FormDataContentType())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("multipart deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMultipartOversizedIgnoredFieldRejected(t *testing.T) {
+	s := newTestServer(t)
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	// Oversized ignored field first: the cap must reject it with 413
+	// without unbounded reads.
+	fw, err := mw.CreateFormField("note")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit := int64(sites.MaxUploadBytes) + 1
+	chunk := make([]byte, 1<<20)
+	var written int64
+	for written < limit {
+		n := int64(len(chunk))
+		if written+n > limit {
+			n = limit - written
+		}
+		if _, err := fw.Write(chunk[:n]); err != nil {
+			t.Fatal(err)
+		}
+		written += n
+	}
+	afw, err := mw.CreateFormFile("archive", "dist.tar.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arc := tarGz(t, map[string]string{"index.html": "mp"})
+	if _, err := io.Copy(afw, arc); err != nil {
+		t.Fatal(err)
+	}
+	if err := mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	rec := doReq(s, http.MethodPost, testDomain, "/api/sites/mpbig/deploy",
+		devToken(t, "alice@example.com"), &buf, mw.FormDataContentType())
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized ignored field = %d: %s, want 413", rec.Code, rec.Body.String())
 	}
 }
 
