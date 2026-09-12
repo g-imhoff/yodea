@@ -11,12 +11,12 @@ import {
 } from "@/components/ui/empty"
 import { Skeleton } from "@/components/ui/skeleton"
 
-export function ListLoading() {
+export function ListLoading({ label = "Loading previews" }: { label?: string }) {
   return (
-    <div className="flex flex-col gap-3" aria-label="Loading previews">
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
-      <Skeleton className="h-24 w-full" />
+    <div className="flex flex-col gap-3" role="status" aria-label={label}>
+      <Skeleton className="h-24 w-full" aria-hidden="true" />
+      <Skeleton className="h-24 w-full" aria-hidden="true" />
+      <Skeleton className="h-24 w-full" aria-hidden="true" />
     </div>
   )
 }
@@ -24,15 +24,17 @@ export function ListLoading() {
 export function ListError({
   message,
   onRetry,
+  title = "Could not load previews",
 }: {
   message: string
   onRetry: () => void
+  title?: string
 }) {
   return (
     <div className="flex flex-col gap-3">
       <Alert variant="destructive">
         <TriangleAlertIcon />
-        <AlertTitle>Could not load previews</AlertTitle>
+        <AlertTitle>{title}</AlertTitle>
         <AlertDescription>{message}</AlertDescription>
       </Alert>
       <div>
@@ -57,7 +59,7 @@ export function ListEmpty({
   return (
     <Empty>
       <EmptyHeader>
-        <EmptyMedia variant="icon">{icon}</EmptyMedia>
+        <EmptyMedia variant="icon" aria-hidden="true">{icon}</EmptyMedia>
         <EmptyTitle>{title}</EmptyTitle>
         <EmptyDescription>{description}</EmptyDescription>
       </EmptyHeader>

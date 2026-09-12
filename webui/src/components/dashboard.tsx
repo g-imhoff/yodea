@@ -154,6 +154,7 @@ export function Dashboard(props: DashboardData) {
       <Separator />
       {favToggleError && (
         <ListError
+          title="Could not save favorite"
           message={`Could not save ${favToggleError.label} to favorites. Check your connection and try again.`}
           onRetry={handleRetryToggle}
         />
@@ -174,7 +175,7 @@ export function Dashboard(props: DashboardData) {
           </TabsTrigger>
         </TabsList>
         <TabsContent value="previews">
-          {sitesStatus === "loading" && <ListLoading />}
+          {sitesStatus === "loading" && <ListLoading label="Loading my previews" />}
           {sitesStatus === "error" && (
             <ListError
               message="My previews are unavailable right now."
@@ -193,7 +194,9 @@ export function Dashboard(props: DashboardData) {
             ))}
         </TabsContent>
         <TabsContent value="viewed">
-          {viewsStatus === "loading" && <ListLoading />}
+          {viewsStatus === "loading" && (
+            <ListLoading label="Loading recently viewed" />
+          )}
           {viewsStatus === "error" && (
             <ListError
               message="Recently viewed previews are unavailable right now."
@@ -219,7 +222,7 @@ export function Dashboard(props: DashboardData) {
             ))}
         </TabsContent>
         <TabsContent value="favorites">
-          {favStatus === "loading" && <ListLoading />}
+          {favStatus === "loading" && <ListLoading label="Loading favorites" />}
           {favStatus === "error" && (
             <ListError
               message="Favorites are unavailable right now."
