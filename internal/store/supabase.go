@@ -463,8 +463,11 @@ func (s *SupabaseStore) Probe() error {
 
 // ListFavorites returns one viewer's favorites newest first, filtered
 // against existing sites so deleted previews drop out (parity with the
-// local Store's eager prune). Nil means the favorites read failed;
-// on existence-check failure the unfiltered rows are returned to avoid
+// local Store's eager prune). The existence check runs with the explicit
+// system context so RLS cannot hide sites owned by other users: any
+// readable preview may be favorited, and only genuinely deleted labels
+// filter out. Nil means the favorites read failed; on existence-check
+// transport/status failure the unfiltered rows are returned to avoid
 // data loss.
 func (s *SupabaseStore) ListFavorites(token, userID string) []Favorite {
 	if err := requireCallerToken(token); err != nil {
@@ -498,7 +501,9 @@ func (s *SupabaseStore) ListFavorites(token, userID string) []Favorite {
 	ev := url.Values{}
 	ev.Set("select", "label")
 	ev.Set("label", "in.("+strings.Join(labels, ",")+")")
-	ereq, err := s.req(http.MethodGet, tableSites, q(ev), token, nil)
+	// System context: the viewer JWT would let RLS hide sites owned by
+	// other users and wrongly drop shared favorites as orphans.
+	ereq, err := s.systemReq(http.MethodGet, tableSites, q(ev), nil)
 	if err != nil {
 		return out
 	}
