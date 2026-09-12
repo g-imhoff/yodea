@@ -484,18 +484,60 @@ func (s *Store) AddFavorite(_, userID, label string) error {
 	return s.save()
 }
 
-// Probe reports whether the metadata directory is still there. The
-// in-process store itself cannot go unreachable; disk trouble surfaces as
-// save errors, which now propagate to callers.
+// Probe checks metadata health with an actual read plus JSON parse of
+// db.json and db.json.bak into a throwaway, mirroring loadWithFallback's
+// fallback without mutating s.d. It is healthy when at least one file
+// parses, including a missing primary with a valid backup (boot falls
+// back). Fresh or empty stores (both files missing or empty) stay healthy.
+// Otherwise (both corrupt, or unreadable) it returns an error. A missing
+// metadata dir is an error.
 func (s *Store) Probe() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if st, err := os.Stat(filepath.Dir(s.path)); err != nil {
+	if st, err := os.Stat(s.dir); err != nil {
 		return err
 	} else if !st.IsDir() {
 		return errors.New("metadata dir is not a directory")
 	}
-	return nil
+	primaryBuf, primaryErr := os.ReadFile(s.path)
+	if primaryErr == nil && len(primaryBuf) > 0 {
+		var dd data
+		if json.Unmarshal(primaryBuf, &dd) == nil {
+			return nil
+		}
+	}
+	backupBuf, backupErr := os.ReadFile(s.bakPath)
+	if backupErr == nil && len(backupBuf) > 0 {
+		var bd data
+		if json.Unmarshal(backupBuf, &bd) == nil {
+			return nil
+		}
+	}
+	primaryMissingOrEmpty := errors.Is(primaryErr, os.ErrNotExist) || (primaryErr == nil && len(primaryBuf) == 0)
+	backupMissingOrEmpty := errors.Is(backupErr, os.ErrNotExist) || (backupErr == nil && len(backupBuf) == 0)
+	if primaryMissingOrEmpty && backupMissingOrEmpty {
+		return nil
+	}
+	return fmt.Errorf("metadata store unreadable: primary %s (%s), backup %s (%s)",
+		s.path, probeDetail(primaryErr, primaryBuf), s.bakPath, probeDetail(backupErr, backupBuf))
+}
+
+// probeDetail describes why a probe read did not parse, for Probe errors.
+// It reports read failures verbatim, empty files as empty, and non-empty
+// unparsable files as corrupt with the JSON error. Callers only use it on
+// the error path where neither file parsed.
+func probeDetail(readErr error, buf []byte) string {
+	if readErr != nil {
+		return readErr.Error()
+	}
+	if len(buf) == 0 {
+		return "empty"
+	}
+	var dd data
+	if err := json.Unmarshal(buf, &dd); err != nil {
+		return "corrupt: " + err.Error()
+	}
+	return "unreadable"
 }
 
 // RemoveFavorite drops one viewer's favorite; false with nil error means it
