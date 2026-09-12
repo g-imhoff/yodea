@@ -201,7 +201,7 @@ func cmdPush(server string, serverFlagSet bool, args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("pushed %s: %s (%d files, %d bytes)\n", res.Project, res.URL, res.Files, res.Bytes)
+	fmt.Printf("pushed %q: %q (%d files, %d bytes)\n", res.Project, res.URL, res.Files, res.Bytes)
 	return nil
 }
 

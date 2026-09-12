@@ -218,3 +218,59 @@ func TestDeleteQuotesName(t *testing.T) {
 		t.Fatalf("delete output should quote name, got %q", out)
 	}
 }
+
+func TestPushQuotesHostileProjectAndURL(t *testing.T) {
+	isolateSession(t)
+	t.Setenv("YODEA_SERVER", "")
+	t.Setenv("YODEA_DEV", "")
+	hostileProject := "evil\tproj\ninject"
+	hostileURL := "https://example.test/a\tb\nc"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"url":%q,"project":%q,"label":"x","files":2,"bytes":10}`, hostileURL, hostileProject)
+	}))
+	defer srv.Close()
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	pkg := `{"dependencies":{"react":"^18","react-dom":"^18"},"devDependencies":{"vite":"^5"}}`
+	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "vite.config.ts"), []byte(`export default {}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tsconfig.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "App.tsx"), []byte(`export default function App() { return null }`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "dist", "index.html"), []byte("<h1>hi</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := captureStdout(t, func() error {
+		return cmdPush(srv.URL, true, []string{"--dir", dir, "--project", "demo"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantProject := fmt.Sprintf("%q", hostileProject)
+	wantURL := fmt.Sprintf("%q", hostileURL)
+	if !strings.Contains(out, wantProject) {
+		t.Fatalf("push output should quote project as %s, got %q", wantProject, out)
+	}
+	if !strings.Contains(out, wantURL) {
+		t.Fatalf("push output should quote URL as %s, got %q", wantURL, out)
+	}
+	if strings.Count(out, "\n") != 1 {
+		t.Fatalf("quoted push output should be one line, got %q", out)
+	}
+}
