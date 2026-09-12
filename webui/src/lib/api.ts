@@ -86,6 +86,17 @@ export function removeFavorite(label: string): Promise<{ status: string }> {
  */
 export function safeNext(raw: string | null, host: string): string {
   if (!raw) return "/"
+  // Mirror the server: browsers normalize \ to /, so reject backslashes,
+  // control chars, and encoded separators/nulls before allowing anything.
+  if (raw.includes("\\")) return "/"
+  if (/[\x00-\x1f\x7f]/.test(raw)) return "/"
+  const loweredRaw = raw.toLowerCase()
+  if (
+    loweredRaw.includes("%5c") ||
+    loweredRaw.includes("%2f") ||
+    loweredRaw.includes("%00")
+  )
+    return "/"
   const central = host.split(":")[0].toLowerCase()
   if (raw.startsWith("/") && !raw.startsWith("//")) return raw
   if (!raw.startsWith("https://")) return "/"

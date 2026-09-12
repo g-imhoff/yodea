@@ -1,7 +1,8 @@
 // Command yodead is the yodea backend: central dashboard plus login,
 // session API, site deploys, preview subdomains, views, and favorites.
 //
-// Configuration is env-first with flag overrides:
+// Configuration precedence is flag > env > default: every --flag defaults
+// from its YODEA_* env var and falls back to a built-in default.
 //
 //	YODEA_DATA_DIR       metadata plus sites dir (required)
 //	YODEA_BASE_DOMAIN    central host, e.g. previews.example.com (required)
@@ -10,6 +11,7 @@
 //	SUPABASE_SERVICE_KEY server-side key, only for YODEA_STORE=supabase
 //	YODEA_STORE          "local" (default file store) or "supabase"
 //	YODEA_DEV / --dev    DevNoAuth: per-viewer synthetic tokens, no network
+//	YODEA_SECURE_COOKIES "1" forces Secure cookies, "0" disables; default is !dev
 //	PORT / YODEA_ADDR   listen address (default 127.0.0.1:8093)
 //
 // Never ship secrets: keys come from env only. YODEA_DEV must never be set
@@ -53,6 +55,15 @@ func main() {
 	if *dataDir == "" || *domain == "" {
 		log.Fatal("yodead: --data-dir and --domain (or YODEA_DATA_DIR/YODEA_BASE_DOMAIN) are required")
 	}
+	secureCookies := !*dev
+	if v := strings.TrimSpace(os.Getenv("YODEA_SECURE_COOKIES")); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes":
+			secureCookies = true
+		case "0", "false", "no":
+			secureCookies = false
+		}
+	}
 	s, err := server.New(server.Config{
 		Addr:          *addr,
 		DataDir:       *dataDir,
@@ -62,7 +73,7 @@ func main() {
 		SupabaseKey:   os.Getenv("SUPABASE_SERVICE_KEY"),
 		StoreBackend:  *storeBackend,
 		DevNoAuth:     *dev,
-		SecureCookies: !*dev, // dev serves plain http on loopback
+		SecureCookies: secureCookies, // default !dev; YODEA_SECURE_COOKIES=1/0 overrides
 	})
 	if err != nil {
 		log.Fatalf("yodead: %v", err)
