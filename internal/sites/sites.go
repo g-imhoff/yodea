@@ -70,7 +70,9 @@ func Sanitize(s string) string {
 	return out
 }
 
-// LabelFor builds <userpart>-<project> within 63 chars.
+// LabelFor builds <userpart>-<project> within 63 chars. The user part is
+// preserved in full so distinct users keep distinct labels; only the
+// project tail is trimmed to fit. Existing short labels are unchanged.
 func LabelFor(userPart, project string) string {
 	p := Sanitize(project)
 	u := Sanitize(userPart)
@@ -79,7 +81,9 @@ func LabelFor(userPart, project string) string {
 		keep := 63 - len(u) - 1
 		if keep < 8 {
 			// user part wins for uniqueness; hard-trim project.
-			p = p[:8]
+			if len(p) > 8 {
+				p = p[:8]
+			}
 			label = u + "-" + p
 			if len(label) > 63 {
 				label = label[:63]

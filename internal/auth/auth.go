@@ -154,7 +154,9 @@ func DevTokenFor(email string) (token, userID string, err error) {
 }
 
 // UserPart derives a short DNS-safe handle from a user ID for preview
-// subdomain labels.
+// subdomain labels. It keeps up to 20 chars so distinct users (long dev
+// names, UUID prefixes) rarely collide while still leaving room for
+// <userpart>-<project> within the 63-char DNS limit.
 func UserPart(userID string) string {
 	s := strings.ToLower(userID)
 	var b strings.Builder
@@ -167,8 +169,8 @@ func UserPart(userID string) string {
 		}
 	}
 	out := strings.Trim(collapse(b.String()), "-")
-	if len(out) > 12 {
-		out = out[:12]
+	if len(out) > 20 {
+		out = strings.Trim(out[:20], "-")
 	}
 	if out == "" {
 		out = "user"
