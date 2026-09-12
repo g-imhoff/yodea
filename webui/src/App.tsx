@@ -124,8 +124,9 @@ export function App() {
 
   if (phase === "checking") {
     return (
-      <div className="flex min-h-svh items-center justify-center">
+      <div className="flex min-h-svh items-center justify-center gap-2">
         <Spinner />
+        <span>Loading yodea...</span>
       </div>
     )
   }
