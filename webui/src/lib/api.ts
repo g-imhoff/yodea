@@ -115,35 +115,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       res = await doFetch()
     }
   }
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    ...init,
-    headers,
-  })
+  // Parse the body once: error branches and the success path share it.
+  const data: unknown = await res.json().catch(() => null)
+  const errBody = (data ?? {}) as { error?: string; code?: string }
   if (res.status === 401) {
     // Keep AuthError on 401 but carry the server's message/code through.
-    try {
-      const data = (await res.json()) as { error?: string; code?: string }
-      const msg = data.error ?? "login required"
-      const code = data.code ?? "login_required"
-      throw new AuthError(code ? `${msg} [${code}]` : msg)
-    } catch (e) {
-      if (e instanceof AuthError) throw e
-      throw new AuthError()
-    }
+    const msg = errBody.error ?? "login required"
+    const code = errBody.code ?? "login_required"
+    throw new AuthError(code ? `${msg} [${code}]` : msg)
   }
   if (!res.ok) {
-    try {
-      const data = (await res.json()) as { error?: string; code?: string }
-      const msg = data.error ?? `request failed: ${res.status}`
-      const code = data.code ?? ""
-      throw new CodedError(msg, code, res.status)
-    } catch (e) {
-      if (e instanceof CodedError) throw e
-      throw new Error(`request failed: ${res.status}`)
-    }
+    const msg = errBody.error ?? `request failed: ${res.status}`
+    const code = errBody.code ?? ""
+    throw new CodedError(msg, code, res.status)
   }
-  return (await res.json()) as T
+  return data as T
 }
 
 export async function login(
