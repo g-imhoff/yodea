@@ -471,30 +471,10 @@ func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// validProject keeps project names single-segment and bounded; the label
-// builder sanitizes the rest into DNS-safe form. Blank, dot-only, and
-// names collapsing to the reserved "site" fallback (unless exactly "site")
-// are rejected so distinct projects never share one sanitized identity.
+// validProject delegates to sites.CheckProjectName (single source of
+// truth); the label builder sanitizes the rest into DNS-safe form.
 func validProject(raw string) bool {
-	if raw == "" || len(raw) > 40 {
-		return false
-	}
-	if strings.TrimSpace(raw) == "" {
-		return false
-	}
-	if strings.Trim(raw, ".") == "" {
-		return false
-	}
-	if strings.HasPrefix(raw, "-") || strings.HasSuffix(raw, "-") {
-		return false
-	}
-	if strings.ContainsAny(raw, "/\\?#") {
-		return false
-	}
-	if sites.Sanitize(raw) == "site" && raw != "site" {
-		return false
-	}
-	return true
+	return sites.CheckProjectName(raw) == nil
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project string) {

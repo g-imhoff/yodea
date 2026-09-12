@@ -7,10 +7,11 @@ import (
 	"testing"
 )
 
-// TestSessionUnreadableReturnsLoginError covers the chmod-000 branch:
-// a session file the process cannot read must surface as a login error,
-// not a panic or empty session.
-func TestSessionUnreadableReturnsLoginError(t *testing.T) {
+// TestSessionUnreadableReturnsPermissionError covers the chmod-000 branch:
+// a session file the process cannot read must surface the underlying
+// permission error, not the misleading "not logged in" hint (which is
+// reserved for a missing file).
+func TestSessionUnreadableReturnsPermissionError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file permissions; chmod 000 is not denied for euid 0")
 	}
@@ -23,9 +24,11 @@ func TestSessionUnreadableReturnsLoginError(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
 	if _, err := LoadSession(); err == nil {
-		t.Fatal("LoadSession with unreadable file = nil, want login error")
-	} else if !strings.Contains(err.Error(), "not logged in") {
-		t.Fatalf("LoadSession unreadable = %v, want 'not logged in' hint", err)
+		t.Fatal("LoadSession with unreadable file = nil, want permission error")
+	} else if strings.Contains(err.Error(), "not logged in") {
+		t.Fatalf("LoadSession unreadable = %v, want permission error without 'not logged in' hint", err)
+	} else if !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("LoadSession unreadable = %v, want permission denied", err)
 	}
 }
 
