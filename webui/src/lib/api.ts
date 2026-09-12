@@ -87,7 +87,21 @@ export function removeFavorite(label: string): Promise<{ status: string }> {
 export function safeNext(raw: string | null, host: string): string {
   if (!raw) return "/"
   const central = host.split(":")[0].toLowerCase()
-  if (raw.startsWith("/") && !raw.startsWith("//")) return raw
+  if (raw[0] === "/") {
+    if (raw[1] === "/" || raw[1] === "\\") return "/"
+    const lower = raw.toLowerCase()
+    if (
+      raw.includes("\\") ||
+      raw.includes("\n") ||
+      raw.includes("\r") ||
+      raw.includes("\t") ||
+      lower.includes("%5c") ||
+      lower.includes("%2f") ||
+      lower.includes("%00")
+    )
+      return "/"
+    return raw
+  }
   if (!raw.startsWith("https://")) return "/"
   let url: URL
   try {
@@ -99,6 +113,17 @@ export function safeNext(raw: string | null, host: string): string {
   // Reject userinfo and port tricks before comparing the host.
   if (url.username !== "" || url.password !== "" || url.port !== "") return "/"
   if (url.hostname.toLowerCase() !== central) return "/"
+  const rawLower = raw.toLowerCase()
+  if (
+    raw.includes("\\") ||
+    raw.includes("\n") ||
+    raw.includes("\r") ||
+    raw.includes("\t") ||
+    rawLower.includes("%5c") ||
+    rawLower.includes("%2f") ||
+    rawLower.includes("%00")
+  )
+    return "/"
   return raw
 }
 
