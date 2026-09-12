@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -305,6 +306,68 @@ func TestReadProjectFallsBackToFolderWhenNoConfig(t *testing.T) {
 	}
 	if got != "validproj" {
 		t.Fatalf("fallback = %q, want validproj", got)
+	}
+}
+
+func TestReadProjectDotFallback(t *testing.T) {
+	isolateSession(t)
+	dir := filepath.Join(t.TempDir(), "validproj")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	got, err := ReadProject(".", "")
+	if err != nil {
+		t.Fatalf("ReadProject(\".\") in validproj = %v, want validproj", err)
+	}
+	if got != "validproj" {
+		t.Fatalf("ReadProject(\".\") = %q, want validproj", got)
+	}
+}
+
+func TestCheckProjectRejectsControlsAndEdgeWhitespace(t *testing.T) {
+	isolateSession(t)
+	for _, raw := range []string{
+		" leading", "trailing ", " both ",
+		"\tlead", "trail\t", "a\tb", "a\nb", "a\rb", "a\x00b", "a\x07b", "a\x1bb",
+	} {
+		t.Run("reject/"+strings.ReplaceAll(strings.ReplaceAll(raw, "\n", "\\n"), "\t", "\\t"), func(t *testing.T) {
+			if err := CheckProject(raw); err == nil {
+				t.Fatalf("CheckProject(%q) = nil, want error", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"site", "blog", "my-app", "a1", "my.project"} {
+		t.Run("accept/"+raw, func(t *testing.T) {
+			if err := CheckProject(raw); err != nil {
+				t.Fatalf("CheckProject(%q) = %v, want nil", raw, err)
+			}
+		})
+	}
+}
+
+func TestPackDistRefusesDotfile(t *testing.T) {
+	isolateSession(t)
+	dist := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<h1>hi</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, ".env"), []byte("SECRET=1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := PackDist(dist, &buf)
+	if err == nil {
+		t.Fatal("PackDist with dotfile = nil, want refusal")
+	}
+	if !strings.Contains(err.Error(), ".env") {
+		t.Fatalf("dotfile error should name the file, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "dotfile") || !strings.Contains(err.Error(), "dist never needs dotfiles") {
+		t.Fatalf("dotfile error should say refusing dotfile (dist never needs dotfiles), got %v", err)
 	}
 }
 
