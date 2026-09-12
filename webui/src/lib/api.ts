@@ -45,22 +45,75 @@ export class CodedError extends Error {
 // Kept in module memory only so preview JS cannot steal it; cleared on logout.
 let csrfToken: string | null = null
 
+// Re-obtain the synchronizer token after a reload dropped module memory.
+// POSTs /api/session/refresh with cookies; on success the server rotates
+// the session and returns a fresh csrf_token. Failures leave the token
+// empty so callers fall through to the existing 403/401 error UI.
+async function refreshCsrf(): Promise<void> {
+  try {
+    const res = await fetch("/api/session/refresh", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+    })
+    if (!res.ok) return
+    const body = (await res.json()) as { csrf_token?: unknown }
+    if (typeof body.csrf_token === "string" && body.csrf_token !== "") {
+      csrfToken = body.csrf_token
+    }
+  } catch {
+    // Leave the token empty; the mutating call below 403s into existing UI.
+  }
+}
+
+// Restore the CSRF token on boot when module memory is empty but the
+// session/refresh cookies survived a reload. No-op when already set.
+export async function ensureCsrf(): Promise<void> {
+  if (csrfToken) return
+  await refreshCsrf()
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const method = (init?.method ?? "GET").toUpperCase()
-  const extra = (init?.headers ?? {}) as Record<string, string>
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    ...extra,
-  }
-  if (
+  const isMutatingApi =
     (method === "POST" ||
       method === "PUT" ||
       method === "PATCH" ||
       method === "DELETE") &&
     path.startsWith("/api/") &&
-    csrfToken
-  ) {
-    headers["X-Yodea-CSRF"] = csrfToken
+    path !== "/api/session" &&
+    path !== "/api/session/refresh"
+  const doFetch = (): Promise<Response> => {
+    const extra = (init?.headers ?? {}) as Record<string, string>
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...extra,
+    }
+    if (isMutatingApi && csrfToken) {
+      headers["X-Yodea-CSRF"] = csrfToken
+    }
+    return fetch(path, {
+      credentials: "same-origin",
+      ...init,
+      headers,
+    })
+  }
+  let res = await doFetch()
+  // After a reload the module token is empty while the session cookie
+  // survives, so the first write 403s with {"error":"csrf required"}.
+  // Refresh once and retry once, then surface the error.
+  if (res.status === 403 && isMutatingApi) {
+    let isCsrf = false
+    try {
+      const text = await res.clone().text()
+      isCsrf = text.toLowerCase().includes("csrf")
+    } catch {
+      isCsrf = false
+    }
+    if (isCsrf) {
+      await refreshCsrf()
+      res = await doFetch()
+    }
   }
   const res = await fetch(path, {
     credentials: "same-origin",

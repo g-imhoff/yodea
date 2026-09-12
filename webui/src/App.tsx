@@ -5,6 +5,7 @@ import { LoginPage } from "@/components/login-page"
 import { Spinner } from "@/components/ui/spinner"
 import {
   AuthError,
+  ensureCsrf,
   getSites,
   getViews,
   logout,
@@ -71,6 +72,12 @@ export function App() {
   useEffect(() => {
     let cancelled = false
     ;(async () => {
+      // Restore the CSRF token dropped from module memory by a reload
+      // before any star toggle can 403; the request path retries once
+      // on csrf 403s as a backup. Refresh failure leaves the token empty
+      // and the loaders below route to login/error UI as before.
+      await ensureCsrf()
+      if (cancelled) return
       await Promise.all([loadSites(), loadViews(), loadFavorites()])
       if (cancelled) return
       // Loaders route auth failures to the login phase themselves; only
