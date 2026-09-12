@@ -78,3 +78,74 @@ func TestFailedUpsertPreservesLiveSite(t *testing.T) {
 		t.Fatalf("preview serves v2 after failed deploy: %q", rec3.Body.String())
 	}
 }
+
+// ownerFlipStore simulates the R2 label race at the deploy layer: the two
+// Upserts succeed, but by the time handleDeploy re-reads before ReplaceSite
+// the label is owned by someone else. The deploy must abort with 409 and
+// leave the live files untouched (staging removed, dest never touched).
+type ownerFlipStore struct {
+	store.Storage
+	upserts int
+}
+
+func (f *ownerFlipStore) UpsertSite(token string, site *store.Site) error {
+	f.upserts++
+	return f.Storage.UpsertSite(token, site)
+}
+
+func (f *ownerFlipStore) SiteByLabel(token, label string) *store.Site {
+	s := f.Storage.SiteByLabel(token, label)
+	if s == nil {
+		return nil
+	}
+	if f.upserts >= 2 {
+		cp := *s
+		cp.UserID = "other-user"
+		return &cp
+	}
+	return s
+}
+
+func TestDeployAbortsWhenOwnerChangesBeforeReplace(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>v1</h1>"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+	var dep struct {
+		Label string `json:"label"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dep); err != nil {
+		t.Fatal(err)
+	}
+	indexPath := filepath.Join(sites.SiteDir(s.cfg.DataDir, dep.Label), "index.html")
+	before, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read live file: %v", err)
+	}
+
+	orig := s.metadb
+	flip := &ownerFlipStore{Storage: orig}
+	s.metadb = flip
+	rec2 := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>v2</h1>"}))
+	s.metadb = orig
+	if rec2.Code != http.StatusConflict {
+		t.Fatalf("ownership-changed deploy = %d, want 409: %s", rec2.Code, rec2.Body.String())
+	}
+	if !strings.Contains(rec2.Body.String(), "label is taken") {
+		t.Fatalf("ownership-changed body = %q, want label is taken", rec2.Body.String())
+	}
+
+	after, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("live file missing after aborted deploy: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("live file changed after ownership abort: was %q, now %q", string(before), string(after))
+	}
+	if strings.Contains(string(after), "v2") {
+		t.Fatalf("live file contains v2 after ownership abort: %q", string(after))
+	}
+}

@@ -705,6 +705,15 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 		}
 		return
 	}
+	// Owner recheck closes the file-swap half of the label race: even if
+	// storage let a concurrent writer claim the label between our Upsert
+	// and the disk swap, abort with 409 deleting only staging, never dest.
+	if cur := s.metadb.SiteByLabel(token, label); cur == nil || cur.UserID != userID {
+		os.RemoveAll(staging)
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%s", userID, project, label, "label is taken (owner changed)")
+		writeErr(w, "label_taken", "label is taken")
+		return
+	}
 	if err := sites.ReplaceSite(s.cfg.DataDir, label, staging); err != nil {
 		os.RemoveAll(staging)
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
