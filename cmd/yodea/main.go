@@ -112,7 +112,7 @@ func cmdLogin(server string, args []string) error {
 	if who == "" {
 		who = *email
 	}
-	fmt.Printf("logged in as %s (%s)\n", who, server)
+	fmt.Printf("logged in as %q (%q)\n", who, server)
 	return nil
 }
 
@@ -161,7 +161,7 @@ func cmdInit(args []string) error {
 	if err := client.Init(*dir, project, *force, *link); err != nil {
 		return err
 	}
-	fmt.Printf("initialized %q in %s\n", project, *dir)
+	fmt.Printf("initialized %q in %q\n", project, *dir)
 	return nil
 }
 
