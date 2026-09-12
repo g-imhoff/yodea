@@ -767,3 +767,97 @@ func TestDevNoAuthGuard(t *testing.T) {
 		t.Fatalf("public-bind error = %q, want it to name the bind condition", err.Error())
 	}
 }
+
+func TestDeleteClearsMetadataAndFiles(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>hi</h1>"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+	var dep struct {
+		Label string `json:"label"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dep); err != nil {
+		t.Fatal(err)
+	}
+	dir := sites.SiteDir(s.cfg.DataDir, dep.Label)
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("site dir missing after deploy: %v", err)
+	}
+	if got := s.metadb.SiteByLabel("", dep.Label); got == nil {
+		t.Fatal("metadata row missing after deploy")
+	}
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d: %s, want 200", rec.Code, rec.Body.String())
+	}
+	if got := s.metadb.SiteByLabel("", dep.Label); got != nil {
+		t.Fatalf("metadata row still present after delete: %+v", got)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("site files still present after delete (err=%v)", err)
+	}
+	// Second delete is 404 (nil row mapping).
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("second delete = %d, want 404", rec.Code)
+	}
+}
+
+func TestDeleteDiskFailureKeepsRowForRetry(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	rec := deploy(t, s, alice, "blog", tarGz(t, map[string]string{"index.html": "<h1>hi</h1>"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy = %d: %s", rec.Code, rec.Body.String())
+	}
+	var dep struct {
+		Label string `json:"label"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dep); err != nil {
+		t.Fatal(err)
+	}
+	// Break the sites root (file in place of the dir) so RemoveSite hits
+	// ENOTDIR deterministically, even as root. This stands in for any
+	// disk failure (e.g. unwritable dir).
+	sitesRoot := filepath.Join(s.cfg.DataDir, "sites")
+	backup := filepath.Join(s.cfg.DataDir, "sites.bak")
+	if err := os.Rename(sitesRoot, backup); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := os.Stat(backup); err == nil {
+			_ = os.Remove(sitesRoot)
+			_ = os.Rename(backup, sitesRoot)
+		}
+	}()
+	if err := os.WriteFile(sitesRoot, []byte("not-a-dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("delete with broken sites dir = %d, want 500", rec.Code)
+	}
+	// Files-first: the row stays so the user can retry.
+	if got := s.metadb.SiteByLabel("", dep.Label); got == nil {
+		t.Fatal("metadata row gone after disk failure, want it kept for retry")
+	}
+	// Restore and retry: succeeds and clears both row and files.
+	if err := os.Remove(sitesRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(backup, sitesRoot); err != nil {
+		t.Fatal(err)
+	}
+	rec = doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("retry delete = %d: %s, want 200", rec.Code, rec.Body.String())
+	}
+	if got := s.metadb.SiteByLabel("", dep.Label); got != nil {
+		t.Fatalf("metadata row still present after retry: %+v", got)
+	}
+	if _, err := os.Stat(sites.SiteDir(s.cfg.DataDir, dep.Label)); !os.IsNotExist(err) {
+		t.Fatalf("site files still present after retry (err=%v)", err)
+	}
+}
