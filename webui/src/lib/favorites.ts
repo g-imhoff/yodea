@@ -9,6 +9,11 @@ import {
 } from "@/lib/api"
 import type { LoadStatus } from "@/components/dashboard"
 
+/** Result of a star toggle. AuthError is still routed to onAuthError first;
+ *  callers must stay silent for it (login redirect) and show retry UI only
+ *  for non-auth failures. */
+export type ToggleFavoriteResult = { ok: true } | { ok: false; error: unknown }
+
 /** Server-backed favorites (GET/POST/DELETE /api/favorites, frozen
  *  contracts owned by the server node). Favorites are private per viewer;
  *  the server drops deleted previews from the list, so orphans disappear
@@ -43,7 +48,7 @@ export function useFavorites(opts: { onAuthError: () => void }) {
   }, [])
 
   const toggleFavorite = useCallback(
-    async (label: string) => {
+    async (label: string): Promise<ToggleFavoriteResult> => {
       const saved = favorites.some((f) => f.label === label)
       if (saved) {
         const previous = favorites
@@ -53,11 +58,12 @@ export function useFavorites(opts: { onAuthError: () => void }) {
         } catch (err) {
           if (err instanceof AuthError) {
             authErrorRef.current()
-            return
+            return { ok: false, error: err }
           }
           setFavorites(previous)
+          return { ok: false, error: err }
         }
-        return
+        return { ok: true }
       }
       try {
         const row = await addFavorite(label)
@@ -67,9 +73,12 @@ export function useFavorites(opts: { onAuthError: () => void }) {
       } catch (err) {
         if (err instanceof AuthError) {
           authErrorRef.current()
+          return { ok: false, error: err }
         }
-        // Leave the star unfilled; the error surfaces on the next load.
+        // Leave the star unfilled; the caller surfaces the error with retry UI.
+        return { ok: false, error: err }
       }
+      return { ok: true }
     },
     [favorites]
   )
