@@ -68,14 +68,15 @@ export function Dashboard(props: DashboardData) {
 
   const projectsByLabel = new Map(sites.map((s) => [s.label, s.project]))
   const favoriteLabels = new Set(favorites.map((f) => f.label))
-  // Server rows carry the canonical preview link plus owner and project;
-  // deleted previews are already dropped server-side, so this list is
-  // rendered as returned.
+  // Favorite hrefs use the protocol-aware client preview URL so plain-http
+  // dev stays reachable; fav.link is server-built https metadata and is
+  // intentionally unused here. Deleted previews are already dropped
+  // server-side, so this list is rendered as returned.
   const favoriteItems: PreviewItem[] = favorites.map((fav) => ({
     label: fav.label,
     title: fav.project,
     description: `by ${fav.owner}`,
-    href: fav.link,
+    href: previewUrl(fav.label),
   }))
 
   function renderCards(items: PreviewItem[]) {
