@@ -24,6 +24,8 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -244,6 +246,57 @@ func (s *Server) tokenFor(r *http.Request) (token, userID string, err error) {
 // handleHealth is readiness, not just liveness: 200 {"status":"ok"}
 // only when the data dir is usable and the metadata store answers. Dead
 // disk or dead store reads 503 so traffic moves elsewhere.
+// csrfHeaderName carries the synchronizer token for cookie-authed writes.
+const csrfHeaderName = "X-Yodea-CSRF"
+
+// csrfTokenFor derives the synchronizer token statelessly from the access
+// token: hex(sha256(access_token))[:32]. No server secret is stored; the
+// dashboard keeps the value in JS memory (set at login, cleared on logout)
+// and echoes it back on state-changing /api/* calls. Preview JavaScript
+// cannot read the HttpOnly session cookie, so it cannot recompute this.
+func csrfTokenFor(access string) string {
+	sum := sha256.Sum256([]byte(access))
+	return hex.EncodeToString(sum[:])[:32]
+}
+
+// checkCSRF enforces the synchronizer token for cookie-authed
+// state-changing /api/* requests. Bearer-only callers skip the check
+// (Authorization header present means non-ambient credentials). GET/HEAD/
+// OPTIONS never mutate, and the token-issuing endpoints (/api/session,
+// /api/session/refresh) are exempt so a client can obtain a token. When the
+// session cookie is present without a Bearer header, the X-Yodea-CSRF
+// header must equal csrfTokenFor(token); otherwise 403.
+func (s *Server) checkCSRF(w http.ResponseWriter, r *http.Request, token string) bool {
+	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
+		return true
+	}
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		return true
+	}
+	if r.URL.Path == "/api/session" || r.URL.Path == "/api/session/refresh" {
+		return true
+	}
+	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return true
+	}
+	c, err := r.Cookie("yodea_session")
+	if err != nil {
+		// No ambient cookie: Bearer-only or unauthenticated, nothing to forge.
+		return true
+	}
+	if token == "" {
+		token = c.Value
+	}
+	if token == "" {
+		return true
+	}
+	if r.Header.Get(csrfHeaderName) != csrfTokenFor(token) {
+		writeErr(w, http.StatusForbidden, "csrf required")
+		return false
+	}
+	return true
+}
+
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	if err := s.checkReady(); err != nil {
 		log.Printf("healthz unavailable: %v", err)
@@ -312,10 +365,13 @@ func (s *Server) setSessionCookies(w http.ResponseWriter, access string, accessT
 	})
 	if refresh != "" {
 		http.SetCookie(w, &http.Cookie{
-			Name:     "yodea_refresh",
-			Value:    refresh,
-			Path:     "/api/session", // central host only, least privilege
-			Domain:   domain,
+			Name:  "yodea_refresh",
+			Value: refresh,
+			// Host-only (no Domain): the long-lived credential must never
+			// reach preview subdomains, so a preview hosting path
+			// /api/session cannot receive it. Path stays scoped to the
+			// refresh endpoint.
+			Path:     "/api/session",
 			MaxAge:   30 * 24 * 3600,
 			HttpOnly: true,
 			Secure:   s.cfg.SecureCookies,
@@ -341,7 +397,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.setSessionCookies(w, token, 3600, "")
-		writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "expires_in": 3600})
+		writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "expires_in": 3600, "csrf_token": csrfTokenFor(token)})
 		return
 	}
 	if s.authc == nil {
@@ -359,7 +415,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookies(w, sess.AccessToken, sess.ExpiresIn, sess.RefreshToken)
-	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "expires_in": sess.ExpiresIn})
+	writeJSON(w, http.StatusOK, map[string]any{"user_id": userID, "expires_in": sess.ExpiresIn, "csrf_token": csrfTokenFor(sess.AccessToken)})
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
@@ -394,11 +450,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 				tok = "dev:" + userID
 			}
 			s.setSessionCookies(w, tok, 3600, "")
-			writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600})
+			writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600, "csrf_token": csrfTokenFor(tok)})
 			return
 		}
 		s.setSessionCookies(w, "dev", 3600, "")
-		writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600})
+		writeJSON(w, http.StatusOK, map[string]any{"expires_in": 3600, "csrf_token": csrfTokenFor("dev")})
 		return
 	}
 	if s.authc == nil {
@@ -411,12 +467,17 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.setSessionCookies(w, sess.AccessToken, sess.ExpiresIn, sess.RefreshToken)
-	writeJSON(w, http.StatusOK, map[string]any{"expires_in": sess.ExpiresIn})
+	writeJSON(w, http.StatusOK, map[string]any{"expires_in": sess.ExpiresIn, "csrf_token": csrfTokenFor(sess.AccessToken)})
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	// Cookie-authed writes need the synchronizer token so a same-site
+	// preview cannot forge a logout (or any other state change).
+	if !s.checkCSRF(w, r, "") {
 		return
 	}
 	// Best-effort server-side revocation before clearing cookies. Skipped
@@ -444,6 +505,14 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 		c.MaxAge = -1
 		http.SetCookie(w, c)
 	}
+	// Clear the host-only refresh cookie (no Domain) alongside the legacy
+	// Domain-scoped variants above.
+	http.SetCookie(w, &http.Cookie{
+		Name:   "yodea_refresh",
+		Path:   "/api/session",
+		Value:  "",
+		MaxAge: -1,
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "logged out"})
 }
 
@@ -493,6 +562,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "login required")
+		return
+	}
+	if !s.checkCSRF(w, r, token) {
 		return
 	}
 	if !validProject(project) {
@@ -659,6 +731,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 		writeErr(w, http.StatusUnauthorized, "login required")
 		return
 	}
+	if !s.checkCSRF(w, r, token) {
+		return
+	}
 	if !validProject(project) {
 		writeErr(w, http.StatusBadRequest, "bad project name")
 		return
@@ -701,6 +776,9 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "login required")
+		return
+	}
+	if r.Method != http.MethodGet && !s.checkCSRF(w, r, token) {
 		return
 	}
 	switch r.Method {
@@ -761,6 +839,9 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "login required")
+		return
+	}
+	if !s.checkCSRF(w, r, token) {
 		return
 	}
 	label := strings.TrimPrefix(r.URL.Path, "/api/favorites/")
