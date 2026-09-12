@@ -134,6 +134,11 @@ func New(cfg Config) (*Server, error) {
 	default:
 		return nil, fmt.Errorf("unknown store backend %q", cfg.StoreBackend)
 	}
+	// Reclaim crashed deploy leftovers (.stage-*, .old-*) under DataDir/sites.
+	// Best-effort: a cleanup failure must not prevent startup. Never touches live dest.
+	if err := sites.CleanupLeftovers(cfg.DataDir); err != nil {
+		log.Printf("sites cleanup: %v", err)
+	}
 	if !HasAssets() {
 		// Degraded UI, live API: the dashboard bundle is copied into
 		// internal/server/web/dist by the UI build before `go build`.
@@ -147,9 +152,17 @@ func New(cfg Config) (*Server, error) {
 // Handler exposes the mux for tests.
 func (s *Server) Handler() http.Handler { return s.mux }
 
-// Close stops background refresh loops.
+// Close stops background refresh loops and releases the metadata store's
+// single-writer lock so the same DataDir can be reopened in-process.
 func (s *Server) Close() {
-	s.verifier.Close()
+	if s.verifier != nil {
+		s.verifier.Close()
+	}
+	if s.metadb != nil {
+		if c, ok := s.metadb.(io.Closer); ok {
+			_ = c.Close()
+		}
+	}
 }
 
 func (s *Server) routes() {

@@ -935,3 +935,57 @@ func TestDeleteDiskFailureKeepsRowForRetry(t *testing.T) {
 		t.Fatalf("site files still present after retry (err=%v)", err)
 	}
 }
+
+func TestCloseReleasesStoreLockForReopen(t *testing.T) {
+	dir := t.TempDir()
+	s, err := New(Config{DataDir: dir, BaseDomain: testDomain, DevNoAuth: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	// Sequential in-process restart on the same DataDir must succeed: Close
+	// has to release the store's flock FD, otherwise the second New hits
+	// the single-writer error.
+	s2, err := New(Config{DataDir: dir, BaseDomain: testDomain, DevNoAuth: true})
+	if err != nil {
+		t.Fatalf("reopen after Close = %v, want nil", err)
+	}
+	s2.Close()
+}
+
+func TestNewCleansStagingLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "sites")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(root, "live-site")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "index.html"), []byte("live"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{".stage-x", ".old-y"} {
+		p := filepath.Join(root, d)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "junk"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := New(Config{DataDir: dir, BaseDomain: testDomain, DevNoAuth: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, d := range []string{".stage-x", ".old-y"} {
+		if _, err := os.Stat(filepath.Join(root, d)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after New (err %v)", d, err)
+		}
+	}
+	if buf, err := os.ReadFile(filepath.Join(live, "index.html")); err != nil || string(buf) != "live" {
+		t.Fatalf("live dest damaged: %q, err %v", string(buf), err)
+	}
+}

@@ -220,6 +220,39 @@ func NewStagingDir(dataDir string) (string, error) {
 	return os.MkdirTemp(root, ".stage-*")
 }
 
+// CleanupLeftovers removes crashed staging (.stage-*) and backup (.old-*)
+// dirs left under DataDir/sites by interrupted deploys. Call it on startup
+// (server.New, after the store is open) so a crash between the two renames
+// in swapDir never leaves disk litter to accumulate. Only dot-prefixed
+// staging/backup names are removed; the live dest itself (sites/<label>)
+// is never touched. Staging is incomplete by definition and .old-* backups
+// are superseded once the new dest serves.
+func CleanupLeftovers(dataDir string) error {
+	root := sitesRoot(dataDir)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, ".stage-") && !strings.HasPrefix(name, ".old-") {
+			continue
+		}
+		// Extra guard: only dot-prefixed staging/backup names, never live dest.
+		if !strings.HasPrefix(name, ".") {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // RemoveSite deletes a label's live files. It never touches staging dirs.
 func RemoveSite(dataDir, label string) error {
 	return os.RemoveAll(SiteDir(dataDir, label))
