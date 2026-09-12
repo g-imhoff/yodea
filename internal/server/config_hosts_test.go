@@ -9,21 +9,22 @@ import (
 	"testing"
 )
 
-func TestSupabaseStoreAcceptsAnonFallback(t *testing.T) {
-	// Aligns New with ConfigFromEnv: anon key works as the server-side
-	// key instead of refusing to boot.
-	s, err := New(Config{
+func TestSupabaseStoreRequiresServiceKey(t *testing.T) {
+	// The supabase store requires the service-role key: with the strict
+	// caller-JWT rule, an anon key cannot back server-side writes, so it
+	// must refuse to boot instead of failing writes at runtime.
+	if _, err := New(Config{
 		DataDir:      t.TempDir(),
 		BaseDomain:   testDomain,
 		DevNoAuth:    true,
 		StoreBackend: "supabase",
 		SupabaseURL:  "https://xyz.supabase.co",
 		AnonKey:      "anon-key",
-	})
-	if err != nil {
-		t.Fatalf("supabase with anon fallback = %v, want boot", err)
+	}); err == nil {
+		t.Fatal("supabase with anon fallback = nil, want refusal")
+	} else if !strings.Contains(err.Error(), "SERVICE_KEY") {
+		t.Fatalf("anon-fallback error = %q, want it to name SUPABASE_SERVICE_KEY", err.Error())
 	}
-	s.Close()
 	// No key at all still fails.
 	if _, err := New(Config{
 		DataDir:      t.TempDir(),

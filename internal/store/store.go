@@ -68,6 +68,9 @@ type Storage interface {
 	ListFavorites(token, userID string) []Favorite
 	AddFavorite(token, userID, label string) error
 	RemoveFavorite(token, userID, label string) (bool, error)
+	// Probe reports whether the backend is reachable. Local always answers
+	// from memory; Supabase performs one small system-keyed read.
+	Probe() error
 }
 
 type data struct {
@@ -432,10 +435,17 @@ func (s *Store) RecordView(_, userID, label string) error {
 }
 
 // RecentViews returns personal history newest first, at most n entries.
-// It never includes other users' views.
+// It never includes other users' views. n is clamped to 0..ViewReturn;
+// n<=0 returns empty.
 func (s *Store) RecentViews(_, userID string, n int) []View {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if n <= 0 {
+		return []View{}
+	}
+	if n > ViewReturn {
+		n = ViewReturn
+	}
 	views := s.d.Views[userID]
 	if len(views) > n {
 		views = views[:n]
@@ -472,6 +482,20 @@ func (s *Store) AddFavorite(_, userID, label string) error {
 	}
 	s.d.Favorites[userID] = append([]Favorite{{UserID: userID, Label: label, CreatedAt: time.Now().UTC()}}, s.d.Favorites[userID]...)
 	return s.save()
+}
+
+// Probe reports whether the metadata directory is still there. The
+// in-process store itself cannot go unreachable; disk trouble surfaces as
+// save errors, which now propagate to callers.
+func (s *Store) Probe() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return err
+	} else if !st.IsDir() {
+		return errors.New("metadata dir is not a directory")
+	}
+	return nil
 }
 
 // RemoveFavorite drops one viewer's favorite; false with nil error means it

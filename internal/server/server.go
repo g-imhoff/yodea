@@ -127,16 +127,10 @@ func New(cfg Config) (*Server, error) {
 		}
 		s.metadb = st
 	case "supabase":
-		key := cfg.SupabaseKey
-		if key == "" {
-			// Match ConfigFromEnv: the anon key works as the server-side
-			// key (leaning fully on RLS) so local/dev boots agree.
-			key = cfg.AnonKey
+		if cfg.SupabaseURL == "" || cfg.SupabaseKey == "" {
+			return nil, errors.New("supabase store needs SUPABASE_URL plus SUPABASE_SERVICE_KEY (service role; the anon key is not enough for server-side writes)")
 		}
-		if cfg.SupabaseURL == "" || key == "" {
-			return nil, errors.New("supabase store needs SUPABASE_URL plus a server-side key")
-		}
-		s.metadb = store.NewSupabaseStore(cfg.SupabaseURL, key)
+		s.metadb = store.NewSupabaseStore(cfg.SupabaseURL, cfg.SupabaseKey)
 	default:
 		return nil, fmt.Errorf("unknown store backend %q", cfg.StoreBackend)
 	}
@@ -307,12 +301,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // checkReady probes the data dir (stat, is-dir, writable) plus one store
-// read. RecentViews is the read that stays non-nil when healthy on both
-// backends (local make()s its result; PostgREST decodes [] to an empty
-// non-nil slice), so a nil return means a Supabase transport error: the
-// list handlers deliberately tolerate that nil as empty, but readiness
-// must not. Empty (len 0) stays healthy here. The empty token leans on
-// the server-side key for Supabase, same as handleCaddyAsk.
+// Probe call. Empty (len 0) stays healthy here.
 func (s *Server) checkReady() error {
 	info, err := os.Stat(s.cfg.DataDir)
 	if err != nil {
@@ -333,8 +322,8 @@ func (s *Server) checkReady() error {
 	if s.metadb == nil {
 		return errors.New("metadata store not configured")
 	}
-	if s.metadb.RecentViews("", "__healthz__", 1) == nil {
-		return errors.New("metadata store unreachable")
+	if err := s.metadb.Probe(); err != nil {
+		return fmt.Errorf("metadata store unreachable: %w", err)
 	}
 	return nil
 }

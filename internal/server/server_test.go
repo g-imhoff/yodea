@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -131,10 +132,12 @@ func TestHealthz503WhenDataDirDead(t *testing.T) {
 	}
 }
 
-// nilViewsStore simulates a dead Supabase backend: its reads fail on
-// transport and surface as nil, which the list handlers tolerate as
-// empty. Readiness must not.
+// nilViewsStore simulates a dead Supabase backend: Probe fails, and reads
+// surface as nil, which the list handlers tolerate as empty. Readiness
+// must not.
 type nilViewsStore struct{ store.Storage }
+
+func (nilViewsStore) Probe() error { return errors.New("store unreachable") }
 
 func (nilViewsStore) RecentViews(_, _ string, _ int) []store.View { return nil }
 
