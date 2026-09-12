@@ -29,6 +29,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -75,6 +76,17 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.BaseDomain == "" {
 		return nil, errors.New("base domain is required")
+	}
+	// Production guard: DevNoAuth accepts forged `dev` / `dev:<id>`
+	// tokens, so refuse to start unless the bind is loopback AND the
+	// domain is a test/local name. Lives in New so all binaries share it.
+	if cfg.DevNoAuth {
+		if !isLoopbackBind(cfg.Addr) {
+			return nil, fmt.Errorf("dev mode refused: bind address %q is not loopback (must bind 127.0.0.1, ::1, or localhost)", cfg.Addr)
+		}
+		if !isTestDomain(cfg.BaseDomain) {
+			return nil, fmt.Errorf("dev mode refused: base domain %q is not a test/local name (must end .test, or be localhost, or start 127./::1)", cfg.BaseDomain)
+		}
 	}
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	if cfg.DevNoAuth {
@@ -948,4 +960,47 @@ func hostOnly(hostport string) string {
 		}
 	}
 	return hostport
+}
+
+// isLoopbackBind reports whether addr binds loopback only (127.0.0.1,
+// ::1, or localhost). Empty hosts (":8093") and wildcard binds
+// (0.0.0.0) are not loopback.
+func isLoopbackBind(addr string) bool {
+	host := strings.TrimSpace(addr)
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.TrimSpace(host)
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// isTestDomain reports whether domain is a test/local name: ends .test,
+// or is localhost, or starts 127./::1.
+func isTestDomain(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(hostOnly(strings.TrimSpace(domain))))
+	d = strings.Trim(d, "[]")
+	d = strings.TrimSuffix(d, ".")
+	if d == "localhost" {
+		return true
+	}
+	if strings.HasSuffix(d, ".test") {
+		return true
+	}
+	if strings.HasPrefix(d, "127.") {
+		return true
+	}
+	if strings.HasPrefix(d, "::1") {
+		return true
+	}
+	return false
 }

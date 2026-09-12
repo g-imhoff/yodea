@@ -623,3 +623,28 @@ func TestLabelSuffixLongBaseFits63(t *testing.T) {
 		t.Fatalf("suffixed long base = %q, want suffix -2", got)
 	}
 }
+
+func TestDevNoAuthGuard(t *testing.T) {
+	// Production domain must refuse to boot with DevNoAuth.
+	s, err := New(Config{DataDir: t.TempDir(), BaseDomain: "previews.example.com", DevNoAuth: true})
+	if err == nil {
+		s.Close()
+		t.Fatal("New(DevNoAuth, previews.example.com) succeeded, want refusal")
+	} else if !strings.Contains(err.Error(), "base domain") {
+		t.Fatalf("prod-domain error = %q, want it to name the base domain condition", err.Error())
+	}
+	// Test/local domain stays allowed on the default loopback bind.
+	s, err = New(Config{DataDir: t.TempDir(), BaseDomain: "previews.example.test", DevNoAuth: true})
+	if err != nil {
+		t.Fatalf("New(DevNoAuth, previews.example.test) = %v, want success", err)
+	}
+	s.Close()
+	// Public bind must refuse even with a test domain.
+	s, err = New(Config{Addr: "0.0.0.0:8093", DataDir: t.TempDir(), BaseDomain: testDomain, DevNoAuth: true})
+	if err == nil {
+		s.Close()
+		t.Fatal("New(DevNoAuth, 0.0.0.0) succeeded, want refusal")
+	} else if !strings.Contains(err.Error(), "bind") {
+		t.Fatalf("public-bind error = %q, want it to name the bind condition", err.Error())
+	}
+}
