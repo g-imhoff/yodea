@@ -186,3 +186,57 @@ func TestLabelForLongProjectDistinctUsers(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupLeftoversRemovesStageAndOldKeepsLive(t *testing.T) {
+	dataDir := t.TempDir()
+	root := filepath.Join(dataDir, "sites")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	live := filepath.Join(root, "live-site")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "index.html"), []byte("<h1>live</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{".stage-x", ".old-y"} {
+		p := filepath.Join(root, dir)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p, "junk"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Must survive: non-matching dot file and non-dot lookalikes, never live dest.
+	keepDot := filepath.Join(root, ".keep")
+	if err := os.WriteFile(keepDot, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lookalike := filepath.Join(root, "stage-live")
+	if err := os.MkdirAll(lookalike, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CleanupLeftovers(dataDir); err != nil {
+		t.Fatalf("CleanupLeftovers = %v, want nil", err)
+	}
+	for _, dir := range []string{".stage-x", ".old-y"} {
+		if _, err := os.Stat(filepath.Join(root, dir)); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists after cleanup (err %v)", dir, err)
+		}
+	}
+	if buf, err := os.ReadFile(filepath.Join(live, "index.html")); err != nil || string(buf) != "<h1>live</h1>" {
+		t.Fatalf("live dest damaged: %q, err %v", string(buf), err)
+	}
+	if _, err := os.Stat(keepDot); err != nil {
+		t.Fatalf(".keep should survive cleanup: %v", err)
+	}
+	if _, err := os.Stat(lookalike); err != nil {
+		t.Fatalf("non-dot lookalike should survive cleanup: %v", err)
+	}
+	// Missing sites root is a no-op.
+	if err := CleanupLeftovers(filepath.Join(t.TempDir(), "does-not-exist")); err != nil {
+		t.Fatalf("cleanup on missing root = %v, want nil", err)
+	}
+}

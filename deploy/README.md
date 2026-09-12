@@ -14,17 +14,29 @@ deploys into it):
 ```
 <data-dir>/
   db.json            # local metadata store: sites, per-viewer views, favorites
+  db.json.bak        # previous good copy, rotated before each save; fallback when primary is missing, empty, or corrupt
   db.json.tmp        # transient, during atomic save-rename only
+  yodead.lock        # single-writer flock file (FD held for the Store lifetime, PID inside)
   sites/
     <label>/         # one dir per preview label, static dist files
       index.html     # required; missing assets stay 404, extensionless
                      # routes fall back to index.html
+    .stage-*/        # transient staging, one per deploy; crashed leftovers removed on startup
+    .old-*/          # transient backup during atomic swap; crashed leftovers removed on startup
 ```
 
 Details from the code: the directory is created `0755`; `db.json` is written
 `0600` via atomic write-to-`db.json.tmp`-then-rename (`internal/store/store.go`);
-site files land `0644` and directories `0755` with no exec bits
-(`internal/sites`). Only the local store uses `db.json`; with
+the previous good primary is rotated to `db.json.bak` (only when it parses,
+so a corrupt primary never destroys a good backup) and `Open` boots from the
+backup when the primary is missing, empty, or corrupt (error only when both
+are corrupt). Site files land `0644` and directories `0755` with no exec bits
+(`internal/sites`). Deploys extract to a unique `sites/.stage-*` dir and swap
+it live via `ReplaceSite`; the previous live dir moves aside to a unique
+`sites/.old-*` backup between the two renames. `server.New` calls
+`sites.CleanupLeftovers` on startup to remove crashed `.stage-*` and `.old-*`
+leftovers (only dot-prefixed staging/backup names, never the live dest).
+Only the local store uses `db.json`; with
 `YODEA_STORE=supabase` metadata lives in PostgREST and the DataDir still
 holds `sites/<label>/`.
 
@@ -84,8 +96,13 @@ first visit, and only live previews can get one.
 
 ## Single-writer rule for the local store
 
-The local store is one JSON file guarded by a single process mutex with
-atomic save-rename. Run exactly one `yodead` writer per DataDir: two
-processes sharing one `db.json` will lose each other's updates. The
-multi-writer path is `YODEA_STORE=supabase`, where PostgREST plus RLS own
+The local store is one JSON file guarded by an in-process mutex plus an
+exclusive non-blocking flock on `<data-dir>/yodead.lock` (FD held for the
+Store lifetime; `Server.Close` calls `Store.Close` to release it) with
+atomic save-rename and backup rotation to `db.json.bak`. Run exactly one
+`yodead` writer per DataDir: a second process opening the same dir gets a
+single-writer refusal, and sequential in-process restarts must `Close`
+before reopening. Crashed deploy leftovers (`sites/.stage-*`, `sites/.old-*`)
+are removed on startup by `sites.CleanupLeftovers` (never the live dest).
+The multi-writer path is `YODEA_STORE=supabase`, where PostgREST plus RLS own
 concurrency (schema in `supabase/migrations/0001_yodea_mvp.sql`).
