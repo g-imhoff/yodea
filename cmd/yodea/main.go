@@ -9,6 +9,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -54,8 +55,7 @@ func run(args []string) error {
 	case "delete":
 		return cmdDelete(server, serverFlagSet, rest[1:])
 	case "-h", "-help", "--help", "help":
-		usage()
-		return nil
+		return showHelp(rest[1:])
 	default:
 		return fmt.Errorf("unknown command %q (want login, init, push, list, or delete)", rest[0])
 	}
@@ -74,14 +74,72 @@ func usage() {
   list                           list your personal sites (GET /api/sites)
   delete <project>               delete one project
 
+Run 'yodea <command> --help' or 'yodea help <command>' for command details.
+
 Server: --server, else $YODEA_SERVER, else localhost:8093 when $YODEA_DEV=1.`)
+}
+
+// setUsage gives fs a help text that prints to stdout: a synopsis line,
+// a short explanation, then the flag defaults.
+func setUsage(fs *flag.FlagSet, synopsis, detail string) {
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stdout, "usage: %s\n\n%s\n", synopsis, detail)
+		hasFlags := false
+		fs.VisitAll(func(*flag.Flag) { hasFlags = true })
+		if hasFlags {
+			fmt.Fprintln(os.Stdout, "\nOptions:")
+			fs.SetOutput(os.Stdout)
+			fs.PrintDefaults()
+			fs.SetOutput(os.Stderr)
+		}
+	}
+}
+
+// parseArgs parses args. It reports whether to stop: -h/--help prints
+// usage and stops with success; any other parse failure is an error.
+func parseArgs(fs *flag.FlagSet, args []string) (bool, error) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
+// showHelp prints the overview (no topic) or one command's help by
+// reusing that command's real FlagSet, so the text never drifts.
+func showHelp(args []string) error {
+	if len(args) == 0 {
+		usage()
+		return nil
+	}
+	switch args[0] {
+	case "login":
+		return cmdLogin("", []string{"--help"})
+	case "init":
+		return cmdInit([]string{"--help"})
+	case "push":
+		return cmdPush("", false, []string{"--help"})
+	case "list":
+		return cmdList("", false, []string{"--help"})
+	case "delete":
+		return cmdDelete("", false, []string{"--help"})
+	default:
+		return fmt.Errorf("unknown command %q (want login, init, push, list, or delete)", args[0])
+	}
 }
 
 func cmdLogin(server string, args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	email := fs.String("email", os.Getenv("YODEA_EMAIL"), "login email ($YODEA_EMAIL)")
-	if err := fs.Parse(args); err != nil {
+	setUsage(fs, "yodea [--server URL] login --email E",
+		"Log in via POST /api/session and save the session (0600 file).\n"+
+			"The password never comes from argv: set $YODEA_PASSWORD or type it at the hidden prompt.")
+	if stop, err := parseArgs(fs, args); err != nil {
 		return err
+	} else if stop {
+		return nil
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("usage: yodea login --email E (login takes options only, got unexpected %q)", fs.Arg(0))
@@ -133,8 +191,15 @@ func cmdInit(args []string) error {
 	dir := fs.String("dir", ".", "target folder")
 	force := fs.Bool("force", false, "allow a non-empty dir (existing files are still never overwritten)")
 	link := fs.Bool("link", false, "link this folder as-is instead of scaffolding")
-	if err := fs.Parse(args); err != nil {
+	setUsage(fs, "yodea init [--dir D] [--force] [--link] [project]",
+		"Scaffold a fresh Vite React TS app, or link an existing folder as-is.\n"+
+			"Linking writes only yodea.json there; scaffolding never overwrites\n"+
+			"existing files. Without a project name the folder base name wins.\n"+
+			"Flags must come before the project name.")
+	if stop, err := parseArgs(fs, args); err != nil {
 		return err
+	} else if stop {
+		return nil
 	}
 	for i := 0; i < fs.NArg(); i++ {
 		if strings.HasPrefix(fs.Arg(i), "-") {
@@ -180,8 +245,14 @@ func cmdPush(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project folder")
 	projectFlag := fs.String("project", "", "project name (default: yodea.json, then folder name)")
-	if err := fs.Parse(args); err != nil {
+	setUsage(fs, "yodea [--server URL] push [--dir D] [--project P]",
+		"Check the folder is a Vite React TS app, pack dist/ (index.html\n"+
+			"required) as a raw gzipped tar, and upload it. Prints the preview\n"+
+			"URL plus file and byte counts.")
+	if stop, err := parseArgs(fs, args); err != nil {
 		return err
+	} else if stop {
+		return nil
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("usage: yodea push [--dir D] [--project P] (got unexpected argument %q)", fs.Arg(0))
@@ -207,8 +278,13 @@ func cmdPush(server string, serverFlagSet bool, args []string) error {
 
 func cmdList(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	setUsage(fs, "yodea [--server URL] list",
+		"List your personal sites (GET /api/sites): one quoted row per\n"+
+			"project with its label and file count.")
+	if stop, err := parseArgs(fs, args); err != nil {
 		return err
+	} else if stop {
+		return nil
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("usage: yodea list (got unexpected argument %q)", fs.Arg(0))
@@ -233,8 +309,12 @@ func cmdList(server string, serverFlagSet bool, args []string) error {
 
 func cmdDelete(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
-	if err := fs.Parse(args); err != nil {
+	setUsage(fs, "yodea [--server URL] delete <project>",
+		"Delete one project and its preview. Takes exactly one project name.")
+	if stop, err := parseArgs(fs, args); err != nil {
 		return err
+	} else if stop {
+		return nil
 	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: yodea delete <project> (takes exactly one project name)")

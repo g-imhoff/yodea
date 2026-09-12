@@ -302,6 +302,48 @@ func TestLoginQuotesHostileIdentity(t *testing.T) {
 	}
 }
 
+func TestSubcommandHelpExitsZero(t *testing.T) {
+	isolateSession(t)
+	cases := []struct {
+		name string
+		args []string
+		call func() error
+		want string
+	}{
+		{"login", []string{"--help"}, func() error { return cmdLogin("", []string{"--help"}) }, "yodea [--server URL] login --email E"},
+		{"login-h", []string{"-h"}, func() error { return cmdLogin("", []string{"-h"}) }, "yodea [--server URL] login --email E"},
+		{"init", []string{"--help"}, func() error { return cmdInit([]string{"--help"}) }, "yodea init [--dir D] [--force] [--link] [project]"},
+		{"push", []string{"--help"}, func() error { return cmdPush("", false, []string{"--help"}) }, "yodea [--server URL] push [--dir D] [--project P]"},
+		{"list", []string{"--help"}, func() error { return cmdList("", false, []string{"--help"}) }, "yodea [--server URL] list"},
+		{"delete", []string{"--help"}, func() error { return cmdDelete("", false, []string{"--help"}) }, "yodea [--server URL] delete <project>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := captureStdout(t, tc.call)
+			if err != nil {
+				t.Fatalf("%s %s returned error: %v", tc.name, tc.args, err)
+			}
+			if !strings.Contains(out, "usage: "+tc.want) {
+				t.Fatalf("%s %v should print %q, got %q", tc.name, tc.args, "usage: "+tc.want, out)
+			}
+		})
+	}
+}
+
+func TestHelpTopicShowsCommandHelp(t *testing.T) {
+	out, err := captureStdout(t, func() error { return run([]string{"help", "push"}) })
+	if err != nil {
+		t.Fatalf("help push returned error: %v", err)
+	}
+	if !strings.Contains(out, "usage: yodea [--server URL] push") {
+		t.Fatalf("help push should print push usage, got %q", out)
+	}
+	if err := run([]string{"help", "bogus"}); err == nil {
+		t.Fatal("expected help with unknown command to fail, got nil")
+	} else if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("want unknown-command error, got %v", err)
+	}
+}
 func TestInitQuotesHostileDir(t *testing.T) {
 	hostileDir := filepath.Join(t.TempDir(), "evil\tdir\ninject")
 	out, err := captureStdout(t, func() error { return cmdInit([]string{"--dir", hostileDir, "demo"}) })
