@@ -1,10 +1,10 @@
-# yodead runtime image (sample, mirrors the production server setup).
+# yodead runtime image (sample).
 #
-# The live `yodead` container (see `docker inspect yodead`) is
-# `debian:stable-slim` with entrypoint `/yodead` and args like:
+# Build with entrypoint `/yodead` and args like:
 #   --addr 0.0.0.0:8093 --data-dir /data --domain previews.example.com
-# The binary and DataDir are host bind-mounts there; this Dockerfile bakes
-# the same layout into an image by copying a prebuilt binary instead.
+# The binary and DataDir are host bind-mounts in a typical deploy; this
+# Dockerfile bakes the same layout into an image by copying a prebuilt
+# binary instead.
 #
 # Build the binary first (from the repo root):
 #   CGO_ENABLED=0 go build -o deploy/yodead ./cmd/yodead
@@ -12,14 +12,14 @@
 #   docker build -f deploy/Dockerfile.yodead -t yodead .
 #
 # Notes:
-# - Base is debian:stable-slim because that is what the container runs
-#   and it is available locally; no RUN step needs the network.
+# - Base is debian:stable-slim and it is available locally; no RUN step
+#   needs the network.
 # - With CGO_ENABLED=0 the binary is static, so `FROM scratch` plus the same
-#   COPY/ENTRYPOINT also works. debian:stable-slim is kept here to match live
-#   and to provide a shell plus CA certificates for debugging.
-# - The container runs as root (no User set); server.go recommends an
-#   unprivileged user with only DataDir (/data) writable. To do that, run
-#   with `docker run --user <uid>:<gid>` and chown the host DataDir to match.
+#   COPY/ENTRYPOINT also works. debian:stable-slim is kept here to provide
+#   a shell plus CA certificates for debugging.
+# - Run as an unprivileged user with only DataDir (/data) writable. To do
+#   that, run with `docker run --user <uid>:<gid>` and chown the host
+#   DataDir to match.
 FROM debian:stable-slim
 
 COPY deploy/yodead /yodead

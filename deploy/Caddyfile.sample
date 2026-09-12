@@ -1,10 +1,7 @@
-# Sample Caddy config for yodea (mirrors the production server Caddyfile blocks).
+# Sample Caddy config for yodea.
 #
 # Copy the global `on_demand_tls` stanza plus the two site blocks below into
 # the real Caddyfile. No edits per deploy: new previews need no proxy changes.
-# Caddyfile: /path/to/caddy/Caddyfile (bind-mounted
-# read-only into the caddy container at /etc/caddy/Caddyfile). Do not commit
-# the live file; it contains unrelated sites and secrets.
 {
 	# Use the operator address for ACME registration.
 	email you@example.com

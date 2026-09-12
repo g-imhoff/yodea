@@ -1,9 +1,8 @@
-# yodead deployment notes (mirrors the production server setup)
+# yodead deployment notes
 
 Samples: `Dockerfile.yodead` (runtime image) and `Caddyfile.sample`
-(apex plus wildcard on-demand blocks). What follows documents the live
-container and Caddy wiring as observed via read-only `docker inspect yodead`
-and the Caddyfile's yodea blocks.
+(apex plus wildcard on-demand blocks). What follows documents the
+container and Caddy wiring.
 
 ## DataDir layout
 
@@ -42,7 +41,7 @@ holds `sites/<label>/`.
 
 ## Container run command
 
-Observed live config (`docker inspect yodead`): image `debian:stable-slim`,
+Observed config: image `debian:stable-slim`,
 entrypoint `/yodead`, restart policy `unless-stopped`, no published ports
 (Caddy is the only public entry), container network shared with Caddy so the
 name `yodead` resolves to port `8093`:
@@ -52,16 +51,16 @@ name `yodead` resolves to port `8093`:
 CGO_ENABLED=0 go build -o deploy/yodead ./cmd/yodead
 docker build -f deploy/Dockerfile.yodead -t yodead .
 
-# Run it the way the container runs (adjust host paths and network).
+# Run it (adjust host paths and network).
 docker run -d --name yodead \
   --network <caddy-network> \
   --restart unless-stopped \
-  -v /var/lib/yodead/data:/data \
+  -v <host-data>:/data \
   yodead \
   --addr 0.0.0.0:8093 --data-dir /data --domain previews.example.com
 ```
 
-The live test container instead bind-mounts a host-built binary read-only
+A dev container instead bind-mounts a host-built binary read-only
 (`<host-binary>:/yodead:ro`) and a host DataDir (`<host-data>:/data`) on the
 same base image with the same flags plus `--dev`. `--dev` selects synthetic
 per-viewer tokens and the local file store; never use it in production.
@@ -72,7 +71,7 @@ a server-side key); secrets come from env only, never flags.
 
 The Caddyfile is bind-mounted read-only into the caddy container at
 `/etc/caddy/Caddyfile`. After editing the host file, validate first, then
-reload (container name varies; it is `sentry-self-hosted-caddy-1`):
+reload:
 
 ```sh
 docker exec <caddy-container> caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
