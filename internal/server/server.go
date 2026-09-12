@@ -717,6 +717,25 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	if err := sites.ReplaceSite(s.cfg.DataDir, label, staging); err != nil {
 		os.RemoveAll(staging)
 		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		if isNew {
+			cleanupPlaceholder()
+			// cleanupPlaceholder only drops zero-count reserves, but the
+			// final Upsert already overwrote the reserve with new counts,
+			// so ensure our placeholder row is gone.
+			if cur := s.metadb.SiteByLabel(token, label); cur != nil && cur.UserID == userID {
+				if _, derr := s.metadb.DeleteSite(token, userID, project); derr != nil {
+					log.Printf("deploy cleanup failed user=%s project=%s label=%s cause=%v", userID, project, label, derr)
+				}
+			}
+		} else if rerr := s.metadb.UpsertSite(token, &store.Site{
+			UserID:  userID,
+			Project: project,
+			Label:   label,
+			Files:   reserveFiles,
+			Bytes:   reserveBytes,
+		}); rerr != nil {
+			log.Printf("deploy restore failed user=%s project=%s label=%s cause=%v", userID, project, label, rerr)
+		}
 		writeErr(w, "deploy_failed", "deploy failed")
 		return
 	}
