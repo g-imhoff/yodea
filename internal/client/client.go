@@ -19,6 +19,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/g-imhoff/yodea/internal/sites"
 )
 
 // DefaultProdServer is used when neither --server, YODEA_SERVER, nor
@@ -28,8 +30,8 @@ const DefaultProdServer = "https://previews.example.com"
 // DefaultDevServer matches `yodead --dev` (listen 127.0.0.1:8093).
 const DefaultDevServer = "http://127.0.0.1:8093"
 
-// MaxUploadBytes mirrors the server cap: deploys over 30MB are rejected.
-const MaxUploadBytes = 30 << 20
+// MaxUploadBytes reuses the server cap: deploys over 30MB are rejected.
+const MaxUploadBytes = sites.MaxUploadBytes
 
 // ResolveServer picks the API base URL: explicit flag first, then
 // YODEA_SERVER, then the dev default when YODEA_DEV=1, else production.

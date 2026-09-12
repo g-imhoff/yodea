@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,6 +105,34 @@ func collapse(s string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// CheckProjectName is the single source of truth for project-name
+// validation: single path segment, bounded, no leading/trailing hyphen,
+// plus blank/dot-only and reserved-fallback rejection (names sanitizing
+// to "site" unless exactly "site"). Both the CLI (client.CheckProject)
+// and the server (validProject) delegate here so a server-side tightening
+// cannot silently break old CLIs at deploy time.
+func CheckProjectName(raw string) error {
+	if raw == "" || len(raw) > 40 {
+		return fmt.Errorf("bad project name %q: must be 1-40 chars", raw)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return fmt.Errorf("bad project name %q: must not be blank", raw)
+	}
+	if strings.Trim(raw, ".") == "" {
+		return fmt.Errorf("bad project name %q: must not be dot-only", raw)
+	}
+	if strings.HasPrefix(raw, "-") || strings.HasSuffix(raw, "-") {
+		return fmt.Errorf("bad project name %q: must not start or end with a hyphen", raw)
+	}
+	if strings.ContainsAny(raw, "/\\?#") {
+		return fmt.Errorf("bad project name %q: must be a single path segment (no / \\ ? #)", raw)
+	}
+	if Sanitize(raw) == "site" && raw != "site" {
+		return fmt.Errorf("bad project name %q: resolves to reserved name %q", raw, "site")
+	}
+	return nil
 }
 
 // ExtractResult summarizes a deploy.
@@ -237,75 +264,4 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 	}
 	os.RemoveAll(old)
 	return res, nil
-}
-
-// PackDir creates a gzipped tar of srcDir for upload. It includes regular
-// files only, skips dotfiles to match ExtractDist, and skips node_modules.
-func PackDir(srcDir string, w io.Writer) (int, error) {
-	gz := gzip.NewWriter(w)
-	defer gz.Close()
-	tw := tar.NewWriter(gz)
-	defer tw.Close()
-	count := 0
-	err := filepath.WalkDir(srcDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		base := filepath.Base(rel)
-		if strings.HasPrefix(base, ".") {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.IsDir() && base == "node_modules" {
-			return filepath.SkipDir
-		}
-		if d.IsDir() {
-			return nil
-		}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("refusing non-regular file %q", rel)
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		hdr := &tar.Header{
-			Name:    filepath.ToSlash(rel),
-			Mode:    0o644,
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
-			Format:  tar.FormatPAX,
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			_ = f.Close()
-			return err
-		}
-		_, copyErr := io.Copy(tw, f)
-		closeErr := f.Close()
-		if copyErr != nil {
-			return copyErr
-		}
-		if closeErr != nil {
-			return closeErr
-		}
-		count++
-		if count > MaxFiles {
-			return fmt.Errorf("directory exceeds %d files", MaxFiles)
-		}
-		return nil
-	})
-	return count, err
 }

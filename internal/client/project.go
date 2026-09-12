@@ -23,30 +23,10 @@ type ProjectConfig struct {
 	Project string `json:"project"`
 }
 
-// CheckProject mirrors the server's project-name rules: single path
-// segment, bounded, no leading/trailing hyphen, plus blank/dot-only and
-// reserved-fallback rejection (names sanitizing to "site" unless exactly
-// "site").
+// CheckProject validates a project name. Thin wrapper over
+// sites.CheckProjectName preserving the CLI's error messages.
 func CheckProject(raw string) error {
-	if raw == "" || len(raw) > 40 {
-		return fmt.Errorf("bad project name %q: must be 1-40 chars", raw)
-	}
-	if strings.TrimSpace(raw) == "" {
-		return fmt.Errorf("bad project name %q: must not be blank", raw)
-	}
-	if strings.Trim(raw, ".") == "" {
-		return fmt.Errorf("bad project name %q: must not be dot-only", raw)
-	}
-	if strings.HasPrefix(raw, "-") || strings.HasSuffix(raw, "-") {
-		return fmt.Errorf("bad project name %q: must not start or end with a hyphen", raw)
-	}
-	if strings.ContainsAny(raw, "/\\?#") {
-		return fmt.Errorf("bad project name %q: must be a single path segment (no / \\ ? #)", raw)
-	}
-	if sites.Sanitize(raw) == "site" && raw != "site" {
-		return fmt.Errorf("bad project name %q: resolves to reserved name %q", raw, "site")
-	}
-	return nil
+	return sites.CheckProjectName(raw)
 }
 
 // ValidateReactTS fast-fails when dir is not a Vite React TS app. It
