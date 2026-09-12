@@ -74,7 +74,12 @@ func (v *Verifier) Verify(tokenString string) (string, error) {
 	if tokenString == "" {
 		return "", errors.New("missing token")
 	}
-	token, err := jwt.Parse(tokenString, v.jwks.Keyfunc)
+	token, err := jwt.Parse(tokenString, v.jwks.Keyfunc,
+		jwt.WithValidMethods([]string{"RS256", "ES256"}),
+		jwt.WithIssuer(v.issuer),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(30*time.Second), // 30s clock skew allowance
+	)
 	if err != nil {
 		return "", fmt.Errorf("parse token: %w", err)
 	}
@@ -85,18 +90,9 @@ func (v *Verifier) Verify(tokenString string) (string, error) {
 	if !ok {
 		return "", errors.New("unexpected claims shape")
 	}
-	iss, _ := claims["iss"].(string)
-	if iss != v.issuer {
-		return "", fmt.Errorf("wrong issuer %q", iss)
-	}
 	sub, _ := claims["sub"].(string)
 	if sub == "" {
 		return "", errors.New("missing sub claim")
-	}
-	if exp, ok := claims["exp"].(float64); ok {
-		if time.Now().Unix() > int64(exp)+30 { // 30s clock skew allowance
-			return "", errors.New("token expired")
-		}
 	}
 	return sub, nil
 }
