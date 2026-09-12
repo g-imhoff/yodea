@@ -17,10 +17,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/g-imhoff/yodea/internal/server"
 )
@@ -67,8 +71,36 @@ func main() {
 	if err != nil {
 		log.Fatalf("yodead: %v", err)
 	}
-	defer s.Close()
-	if err := s.Run(); err != nil {
-		log.Fatalf("yodead: %v", err)
+
+	// Graceful shutdown: SIGINT/SIGTERM drains in-flight deploys plus
+	// db.json writes (10s) before Close stops the JWKS refresh loop.
+	// Without this the default SIGTERM kill abandons in-flight writes
+	// and Close never runs.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- s.Run() }()
+
+	select {
+	case <-ctx.Done():
+		stop()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := s.Shutdown(shutCtx); err != nil {
+			log.Printf("yodead: shutdown: %v", err)
+		}
+		if err := <-runErr; err != nil {
+			log.Fatalf("yodead: %v", err)
+		}
+		s.Close()
+	case err := <-runErr:
+		// ListenAndServe exited on its own (bind failure, ...): Run
+		// already normalized a Shutdown stop to nil, so any error here
+		// is real.
+		s.Close()
+		if err != nil {
+			log.Fatalf("yodead: %v", err)
+		}
 	}
 }
