@@ -12,6 +12,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,19 +92,74 @@ func (c *Client) auth(req *http.Request) {
 	}
 }
 
-// apiError extracts the server's {"error": ...} message, if any.
+// APIError is a server error with its stable machine-readable code.
+// Code comes from the server's {"error","code"} body; older servers send
+// only {"error"}, leaving Code empty for substring fallback.
+type APIError struct {
+	Status int
+	Code   string
+	Msg    string
+}
+
+func (e *APIError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("server error (HTTP %d) [%s]: %s", e.Status, e.Code, e.Msg)
+	}
+	return fmt.Sprintf("server error (HTTP %d): %s", e.Status, e.Msg)
+}
+
+// CodeOf unwraps err to its machine-readable code, or "".
+func CodeOf(err error) string {
+	var a *APIError
+	if errors.As(err, &a) {
+		return a.Code
+	}
+	return ""
+}
+
+// IsCode reports whether err carries the given machine code.
+func IsCode(err error, code string) bool {
+	return CodeOf(err) == code
+}
+
+// IsLabelTaken matches deploy conflicts on code first, falling back to
+// the legacy "label is taken" message substring.
+func IsLabelTaken(err error) bool {
+	if IsCode(err, "label_taken") {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), "label is taken")
+}
+
+// IsNoSuchProject matches delete misses on code first, falling back to
+// the legacy message substring.
+func IsNoSuchProject(err error) bool {
+	if IsCode(err, "no_such_project") {
+		return true
+	}
+	return err != nil && strings.Contains(err.Error(), "no such project")
+}
+
+// apiError extracts the server's {"error","code"} message, if any.
 func apiError(status int, body []byte) error {
 	var v struct {
 		Error string `json:"error"`
+		Code  string `json:"code"`
 	}
-	if err := json.Unmarshal(body, &v); err == nil && v.Error != "" {
-		return fmt.Errorf("server error (HTTP %d): %s", status, v.Error)
+	if err := json.Unmarshal(body, &v); err == nil && (v.Error != "" || v.Code != "") {
+		msg := v.Error
+		if msg == "" {
+			msg = http.StatusText(status)
+		}
+		return &APIError{Status: status, Code: v.Code, Msg: msg}
 	}
 	msg := strings.TrimSpace(string(body))
 	if msg == "" {
 		msg = http.StatusText(status)
 	}
-	return fmt.Errorf("server error (HTTP %d): %s", status, msg)
+	// Best-effort legacy fallback: a bare body may still carry the
+	// message substring without a code.
+	return &APIError{Status: status, Msg: msg}
 }
 
 func readBody(resp *http.Response) []byte {
@@ -199,13 +255,19 @@ func (c *Client) Delete(project string) error {
 		return fmt.Errorf("delete request failed: %w", err)
 	}
 	body := readBody(resp)
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("no such project %q", project)
+	if resp.StatusCode == http.StatusOK {
+		return nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return apiError(resp.StatusCode, body)
+	aerr := apiError(resp.StatusCode, body)
+	// Code first, message-substring fallback for older servers.
+	if IsNoSuchProject(aerr) || resp.StatusCode == http.StatusNotFound {
+		code := CodeOf(aerr)
+		if code == "" {
+			code = "no_such_project"
+		}
+		return &APIError{Status: resp.StatusCode, Code: code, Msg: fmt.Sprintf("no such project %q", project)}
 	}
-	return nil
+	return aerr
 }
 
 // DeployResult is the server's deploy answer; URL is the preview URL.

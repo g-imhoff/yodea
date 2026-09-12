@@ -26,6 +26,20 @@ export class AuthError extends Error {
   }
 }
 
+// CodedError carries the server's stable machine-readable code through
+// the UI: {"error":msg,"code":code}. Message appends [code] so existing
+// message matching keeps working; callers can also read .code directly.
+export class CodedError extends Error {
+  code: string
+  status: number
+  constructor(message: string, code: string, status: number) {
+    super(code ? `${message} [${code}]` : message)
+    this.name = "CodedError"
+    this.code = code
+    this.status = status
+  }
+}
+
 // Synchronizer token for cookie-authed writes: hex(sha256(access_token))[:32]
 // issued as csrf_token by POST /api/session (and /api/session/refresh).
 // Kept in module memory only so preview JS cannot steal it; cleared on logout.
@@ -53,8 +67,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers,
   })
-  if (res.status === 401) throw new AuthError()
-  if (!res.ok) throw new Error(`request failed: ${res.status}`)
+  if (res.status === 401) {
+    // Keep AuthError on 401 but carry the server's message/code through.
+    try {
+      const data = (await res.json()) as { error?: string; code?: string }
+      const msg = data.error ?? "login required"
+      const code = data.code ?? "login_required"
+      throw new AuthError(code ? `${msg} [${code}]` : msg)
+    } catch (e) {
+      if (e instanceof AuthError) throw e
+      throw new AuthError()
+    }
+  }
+  if (!res.ok) {
+    try {
+      const data = (await res.json()) as { error?: string; code?: string }
+      const msg = data.error ?? `request failed: ${res.status}`
+      const code = data.code ?? ""
+      throw new CodedError(msg, code, res.status)
+    } catch (e) {
+      if (e instanceof CodedError) throw e
+      throw new Error(`request failed: ${res.status}`)
+    }
+  }
   return (await res.json()) as T
 }
 
