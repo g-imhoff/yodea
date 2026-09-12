@@ -472,9 +472,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	limit := int64(sites.MaxUploadBytes) + 1
 	if ctype := r.Header.Get("Content-Type"); strings.HasPrefix(ctype, "multipart/") {
+		// Total cap applies before multipart parsing so a huge ignored
+		// field cannot exhaust time/memory while the per-part cap never
+		// applies.
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		mr, err := r.MultipartReader()
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "bad multipart body")
+			if isBodyTooLarge(err) {
+				writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+			} else {
+				writeErr(w, http.StatusBadRequest, "bad multipart body")
+			}
 			return nil, err
 		}
 		for {
@@ -483,20 +491,40 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 				break
 			}
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, "bad multipart body")
+				if isBodyTooLarge(err) {
+					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+				} else {
+					writeErr(w, http.StatusBadRequest, "bad multipart body")
+				}
 				return nil, err
 			}
 			name, file := part.FormName(), part.FileName()
 			if file == "" && name != "archive" && name != "file" {
-				_, _ = io.Copy(io.Discard, part)
+				n, err := io.Copy(io.Discard, io.LimitReader(part, limit))
+				if err != nil {
+					if isBodyTooLarge(err) {
+						writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+					} else {
+						writeErr(w, http.StatusBadRequest, "could not read upload")
+					}
+					return nil, err
+				}
+				if n >= limit {
+					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+					return nil, errors.New("upload too large")
+				}
 				continue
 			}
-			buf, err := io.ReadAll(io.LimitReader(part, limit+1))
+			buf, err := io.ReadAll(io.LimitReader(part, limit))
 			if err != nil {
-				writeErr(w, http.StatusBadRequest, "could not read upload")
+				if isBodyTooLarge(err) {
+					writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
+				} else {
+					writeErr(w, http.StatusBadRequest, "could not read upload")
+				}
 				return nil, err
 			}
-			if int64(len(buf)) > int64(sites.MaxUploadBytes) {
+			if int64(len(buf)) >= limit {
 				writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
 				return nil, errors.New("upload too large")
 			}
@@ -505,17 +533,21 @@ func readArchive(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 		writeErr(w, http.StatusBadRequest, "no archive file in upload")
 		return nil, errors.New("no archive part")
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, limit+1)
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	buf, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
 		return nil, err
 	}
-	if int64(len(buf)) > int64(sites.MaxUploadBytes) {
+	if int64(len(buf)) >= limit {
 		writeErr(w, http.StatusRequestEntityTooLarge, "upload exceeds 30MB")
 		return nil, errors.New("upload too large")
 	}
 	return buf, nil
+}
+
+func isBodyTooLarge(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "request body too large")
 }
 
 // labelFor reuses the author's existing label for the same project so
