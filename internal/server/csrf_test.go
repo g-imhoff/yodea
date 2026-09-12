@@ -127,6 +127,35 @@ func TestCookieAuthedWriteRequiresCSRF(t *testing.T) {
 	}
 }
 
+func TestCookieAuthedRefreshRequiresCSRF(t *testing.T) {
+	s := newTestServer(t)
+	sessionValue, csrf := loginCookieAndCSRF(t, s, "alice@example.com")
+
+	// Cookie-authed refresh without header -> 403 (sibling preview page
+	// must not force session rotation with ambient cookies).
+	req := cookieReq(http.MethodPost, "/api/session/refresh", sessionValue, "", `{"refresh_token":"anything"}`)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cookie refresh without CSRF = %d, want 403", rec.Code)
+	}
+
+	// Cookie-authed refresh with valid header -> 200.
+	req = cookieReq(http.MethodPost, "/api/session/refresh", sessionValue, csrf, `{"refresh_token":"anything"}`)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie refresh with CSRF = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	// Bearer-only refresh without header -> 200 (no ambient cookie).
+	rec = doReq(s, http.MethodPost, testDomain, "/api/session/refresh", devToken(t, "alice@example.com"),
+		strings.NewReader(`{"refresh_token":"anything"}`), "application/json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bearer refresh without CSRF = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestRefreshCookieHasNoDomain(t *testing.T) {
 	s := newTestServer(t)
 	rec := httptest.NewRecorder()

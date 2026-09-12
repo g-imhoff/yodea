@@ -286,10 +286,12 @@ func csrfTokenFor(access string) string {
 // checkCSRF enforces the synchronizer token for cookie-authed
 // state-changing /api/* requests. Bearer-only callers skip the check
 // (Authorization header present means non-ambient credentials). GET/HEAD/
-// OPTIONS never mutate, and the token-issuing endpoints (/api/session,
-// /api/session/refresh) are exempt so a client can obtain a token. When the
-// session cookie is present without a Bearer header, the X-Yodea-CSRF
-// header must equal csrfTokenFor(token); otherwise 403.
+// OPTIONS never mutate, and the token-issuing endpoint (/api/session) is
+// exempt so a client can obtain a token. /api/session/refresh is NOT
+// exempt: when the yodea_session cookie is present without a Bearer
+// header, the X-Yodea-CSRF header must equal csrfTokenFor(token);
+// otherwise 403. Bearer-only refresh calls with no session cookie stay
+// exempt.
 func (s *Server) checkCSRF(w http.ResponseWriter, r *http.Request, token string) bool {
 	if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodOptions {
 		return true
@@ -297,7 +299,7 @@ func (s *Server) checkCSRF(w http.ResponseWriter, r *http.Request, token string)
 	if !strings.HasPrefix(r.URL.Path, "/api/") {
 		return true
 	}
-	if r.URL.Path == "/api/session" || r.URL.Path == "/api/session/refresh" {
+	if r.URL.Path == "/api/session" {
 		return true
 	}
 	if strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
@@ -440,6 +442,12 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, "method_not_allowed", "method not allowed")
+		return
+	}
+	// Cookie-authed refresh needs the synchronizer token so a sibling
+	// preview page cannot force session rotation with ambient cookies.
+	// Bearer-only calls with no session cookie stay exempt.
+	if !s.checkCSRF(w, r, "") {
 		return
 	}
 	refresh := ""
