@@ -738,7 +738,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 		writeErr(w, http.StatusBadRequest, "bad project name")
 		return
 	}
-	site := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
+	site, err := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not delete site")
+		return
+	}
 	if site == nil {
 		writeErr(w, http.StatusNotFound, "no such project")
 		return
@@ -849,7 +853,12 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad label")
 		return
 	}
-	if !s.metadb.RemoveFavorite(token, userID, label) {
+	ok, err := s.metadb.RemoveFavorite(token, userID, label)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "could not remove favorite")
+		return
+	}
+	if !ok {
 		writeErr(w, http.StatusNotFound, "no such favorite")
 		return
 	}
@@ -1032,7 +1041,9 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	rel := strings.TrimPrefix(upath, "/")
 	if rel == "" {
 		serveFile(w, r, filepath.Join(root, "index.html"))
-		s.metadb.RecordView(token, userID, label)
+		if err := s.metadb.RecordView(token, userID, label); err != nil {
+			log.Printf("record view user=%s label=%s: %v", userID, label, err)
+		}
 		return
 	}
 	// Deny dot segments anywhere in the path before touching disk.
@@ -1050,13 +1061,17 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	if info, err := os.Stat(full); err == nil {
 		if info.IsDir() {
 			serveFile(w, r, filepath.Join(full, "index.html"))
-			s.metadb.RecordView(token, userID, label)
+			if err := s.metadb.RecordView(token, userID, label); err != nil {
+				log.Printf("record view user=%s label=%s: %v", userID, label, err)
+			}
 			return
 		}
 		serveFile(w, r, full)
 		// Asset hits serve bytes but record nothing: only documents count.
 		if isDocumentNav(rel, r) {
-			s.metadb.RecordView(token, userID, label)
+			if err := s.metadb.RecordView(token, userID, label); err != nil {
+				log.Printf("record view user=%s label=%s: %v", userID, label, err)
+			}
 		}
 		return
 	}
@@ -1064,7 +1079,9 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 	// Missing .js/.css return 404 so breakage stays visible.
 	if path.Ext(rel) == "" || (strings.Contains(r.Header.Get("Accept"), "text/html") && !isAssetExt(path.Ext(rel))) {
 		serveFile(w, r, filepath.Join(root, "index.html"))
-		s.metadb.RecordView(token, userID, label)
+		if err := s.metadb.RecordView(token, userID, label); err != nil {
+			log.Printf("record view user=%s label=%s: %v", userID, label, err)
+		}
 		return
 	}
 	writeErr(w, http.StatusNotFound, "not found")

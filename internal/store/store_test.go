@@ -10,6 +10,7 @@ func openTest(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -44,7 +45,9 @@ func TestLabelCollisionAcrossUsers(t *testing.T) {
 func TestViewsCapAndOrder(t *testing.T) {
 	s := openTest(t)
 	for i := 0; i < ViewCap+10; i++ {
-		s.RecordView("", "alice", "lbl")
+		if err := s.RecordView("", "alice", "lbl"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if got := s.RecentViews("", "alice", ViewReturn); len(got) != ViewReturn {
 		t.Fatalf("views = %d, want %d", len(got), ViewReturn)
@@ -83,9 +86,15 @@ func TestSiteByLabelAndListSitesReturnCopies(t *testing.T) {
 
 func TestMultiLabelViewOrderingNewestFirst(t *testing.T) {
 	s := openTest(t)
-	s.RecordView("", "alice", "lbl-a")
-	s.RecordView("", "alice", "lbl-b")
-	s.RecordView("", "alice", "lbl-c")
+	if err := s.RecordView("", "alice", "lbl-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordView("", "alice", "lbl-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordView("", "alice", "lbl-c"); err != nil {
+		t.Fatal(err)
+	}
 	got := s.RecentViews("", "alice", ViewReturn)
 	if len(got) != 3 {
 		t.Fatalf("views = %v, want 3", got)
@@ -109,18 +118,18 @@ func TestFavoritesPrivateAndPrunedOnDelete(t *testing.T) {
 	if got := s.ListFavorites("", "bob"); len(got) != 1 {
 		t.Fatalf("bob sees %d favorites, want 1", len(got))
 	}
-	if !s.RemoveFavorite("", "bob", "nope") {
-		// expected false; keep linters quiet about ignored result below
+	if ok, err := s.RemoveFavorite("", "bob", "nope"); err != nil || ok {
+		t.Fatalf("removing missing favorite = (%v,%v), want (false,nil)", ok, err)
 	}
-	if s.RemoveFavorite("", "bob", "nope") {
-		t.Fatal("removing missing favorite should return false")
+	if ok, err := s.RemoveFavorite("", "bob", "nope"); err != nil || ok {
+		t.Fatalf("removing missing favorite = (%v,%v), want (false,nil)", ok, err)
 	}
 	// Re-add, then delete the preview: the favorite must drop out.
 	if err := s.AddFavorite("", "bob", "alice-blog"); err != nil {
 		t.Fatal(err)
 	}
-	if s.DeleteSite("", "alice", "blog") == nil {
-		t.Fatal("delete should return the removed site")
+	if got, err := s.DeleteSite("", "alice", "blog"); err != nil || got == nil {
+		t.Fatalf("delete = (%+v,%v), want site,nil", got, err)
 	}
 	if got := s.ListFavorites("", "bob"); len(got) != 0 {
 		t.Fatalf("deleted preview still favorited: %v", got)
