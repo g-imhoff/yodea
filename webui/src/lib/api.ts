@@ -26,29 +26,59 @@ export class AuthError extends Error {
   }
 }
 
+// Synchronizer token for cookie-authed writes: hex(sha256(access_token))[:32]
+// issued as csrf_token by POST /api/session (and /api/session/refresh).
+// Kept in module memory only so preview JS cannot steal it; cleared on logout.
+let csrfToken: string | null = null
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase()
+  const extra = (init?.headers ?? {}) as Record<string, string>
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...extra,
+  }
+  if (
+    (method === "POST" ||
+      method === "PUT" ||
+      method === "PATCH" ||
+      method === "DELETE") &&
+    path.startsWith("/api/") &&
+    csrfToken
+  ) {
+    headers["X-Yodea-CSRF"] = csrfToken
+  }
   const res = await fetch(path, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers,
   })
   if (res.status === 401) throw new AuthError()
   if (!res.ok) throw new Error(`request failed: ${res.status}`)
   return (await res.json()) as T
 }
 
-export function login(
+export async function login(
   email: string,
   password: string
-): Promise<{ user_id: string }> {
-  return request("/api/session", {
-    method: "POST",
-    body: JSON.stringify({ email, password }),
-  })
+): Promise<{ user_id: string; csrf_token: string }> {
+  const res = await request<{ user_id: string; csrf_token: string }>(
+    "/api/session",
+    {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }
+  )
+  csrfToken = res.csrf_token ?? null
+  return res
 }
 
-export function logout(): Promise<{ status: string }> {
-  return request("/api/logout", { method: "POST" })
+export async function logout(): Promise<{ status: string }> {
+  try {
+    return await request("/api/logout", { method: "POST" })
+  } finally {
+    csrfToken = null
+  }
 }
 
 export function getSites(): Promise<{ sites: Site[] }> {
