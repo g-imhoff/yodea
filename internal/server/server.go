@@ -547,10 +547,15 @@ func validProject(raw string) bool {
 	return sites.CheckProjectName(raw) == nil
 }
 
+func isLabelTaken(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "label is taken")
+}
+
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project string) {
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "login required")
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", "unknown", project, "", err)
 		return
 	}
 	if !s.checkCSRF(w, r, token) {
@@ -558,22 +563,76 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 	}
 	if !validProject(project) {
 		writeErr(w, http.StatusBadRequest, "bad project name")
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%s", userID, project, "", "bad project name")
 		return
 	}
 	project = sites.Sanitize(project)
 	arc, err := readArchive(w, r)
 	if err != nil {
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, "", err)
 		return // readArchive already answered
 	}
 	label := s.labelFor(token, userID, project)
 	if err := sites.ValidateLabel(label); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad label: "+err.Error())
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
 		return
 	}
-	dest := filepath.Join(s.cfg.DataDir, "sites", label)
-	res, err := sites.ExtractDist(bytes.NewReader(arc), dest, 0, 0)
+	// Reserve the label in storage before touching disk. For a redeploy
+	// keep the existing file counts so a later extraction failure leaves
+	// metadata consistent with the live files on disk. For a new label the
+	// placeholder has zero counts and is cleaned up if we fail before the
+	// final Upsert.
+	existingBefore := s.metadb.SiteByLabel(token, label)
+	reserveFiles := 0
+	var reserveBytes int64
+	if existingBefore != nil && existingBefore.UserID == userID {
+		reserveFiles = existingBefore.Files
+		reserveBytes = existingBefore.Bytes
+	}
+	isNew := existingBefore == nil
+	cleanupPlaceholder := func() {
+		if !isNew {
+			return
+		}
+		if cur := s.metadb.SiteByLabel(token, label); cur != nil && cur.UserID == userID && cur.Files == 0 && cur.Bytes == 0 {
+			s.metadb.DeleteSite(token, userID, project)
+		}
+	}
+	if err := s.metadb.UpsertSite(token, &store.Site{
+		UserID:  userID,
+		Project: project,
+		Label:   label,
+		Files:   reserveFiles,
+		Bytes:   reserveBytes,
+	}); err != nil {
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		if isLabelTaken(err) {
+			writeErr(w, http.StatusConflict, err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		}
+		return
+	}
+	// Each deploy extracts to its own unique staging dir so concurrent
+	// deploys for one label never share a path.
+	staging, err := sites.NewStagingDir(s.cfg.DataDir)
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, "rejected upload: "+err.Error())
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		cleanupPlaceholder()
+		writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		return
+	}
+	res, err := sites.ExtractToStaging(bytes.NewReader(arc), staging, 0, 0)
+	if err != nil {
+		os.RemoveAll(staging)
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		cleanupPlaceholder()
+		if sites.IsValidationError(err) {
+			writeErr(w, http.StatusBadRequest, "rejected upload: "+err.Error())
+		} else {
+			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		}
 		return
 	}
 	if err := s.metadb.UpsertSite(token, &store.Site{
@@ -583,8 +642,22 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, project st
 		Files:   res.Files,
 		Bytes:   res.Bytes,
 	}); err != nil {
-		os.RemoveAll(dest)
-		writeErr(w, http.StatusConflict, err.Error())
+		// Conflict: delete only this deploy's staging dir, never dest, so
+		// the previously deployed files stay live.
+		os.RemoveAll(staging)
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		if isLabelTaken(err) {
+			writeErr(w, http.StatusConflict, err.Error())
+		} else {
+			cleanupPlaceholder()
+			writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
+		}
+		return
+	}
+	if err := sites.ReplaceSite(s.cfg.DataDir, label, staging); err != nil {
+		os.RemoveAll(staging)
+		log.Printf("deploy failed user=%s project=%s label=%s cause=%v", userID, project, label, err)
+		writeErr(w, http.StatusInternalServerError, "deploy failed: "+err.Error())
 		return
 	}
 	url := "https://" + label + "." + s.cfg.BaseDomain + "/"
@@ -718,6 +791,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "login required")
+		log.Printf("delete failed user=%s project=%s label=%s cause=%v", "unknown", project, "", err)
 		return
 	}
 	if !s.checkCSRF(w, r, token) {
@@ -725,6 +799,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 	}
 	if !validProject(project) {
 		writeErr(w, http.StatusBadRequest, "bad project name")
+		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "bad project name")
 		return
 	}
 	site, err := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
@@ -734,9 +809,14 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 	}
 	if site == nil {
 		writeErr(w, http.StatusNotFound, "no such project")
+		log.Printf("delete failed user=%s project=%s label=%s cause=%s", userID, project, "", "no such project")
 		return
 	}
-	os.RemoveAll(filepath.Join(s.cfg.DataDir, "sites", site.Label))
+	if err := sites.RemoveSite(s.cfg.DataDir, site.Label); err != nil {
+		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, site.Project, site.Label, err)
+		writeErr(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		return
+	}
 	log.Printf("delete user=%s project=%s label=%s", userID, site.Project, site.Label)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -1025,7 +1105,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request, label str
 		writeErr(w, http.StatusNotFound, "not found")
 		return
 	}
-	root := filepath.Join(s.cfg.DataDir, "sites", label)
+	root := sites.SiteDir(s.cfg.DataDir, label)
 	upath := path.Clean("/" + r.URL.Path)
 	rel := strings.TrimPrefix(upath, "/")
 	if rel == "" {

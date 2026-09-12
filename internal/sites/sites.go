@@ -150,6 +150,122 @@ func CheckProjectName(raw string) error {
 	return nil
 }
 
+// validationError marks input-validation failures (400). Infra/IO failures
+// (MkdirTemp, EACCES, ENOSPC, rename errors) are returned unwrapped so
+// callers map them to 500.
+type validationError struct {
+	msg   string
+	cause error
+}
+
+func (e *validationError) Error() string {
+	if e.cause != nil {
+		return e.msg + ": " + e.cause.Error()
+	}
+	return e.msg
+}
+
+func (e *validationError) Unwrap() error { return e.cause }
+
+func validationf(format string, args ...any) error {
+	return &validationError{msg: fmt.Sprintf(format, args...)}
+}
+
+func validationWrap(cause error, format string, args ...any) error {
+	return &validationError{msg: fmt.Sprintf(format, args...), cause: cause}
+}
+
+// IsValidationError reports whether err is an input-validation failure
+// (400). Anything else from extraction is infra/IO (500).
+func IsValidationError(err error) bool {
+	var ve *validationError
+	return errors.As(err, &ve)
+}
+
+func isDiskError(err error) bool {
+	var pe *os.PathError
+	if errors.As(err, &pe) {
+		return true
+	}
+	var le *os.LinkError
+	if errors.As(err, &le) {
+		return true
+	}
+	var se *os.SyscallError
+	if errors.As(err, &se) {
+		return true
+	}
+	return false
+}
+
+// SiteDir centralizes DataDir/sites/<label> path construction. All server
+// handlers must use this (plus ReplaceSite/RemoveSite/NewStagingDir) instead
+// of building the path by hand.
+func SiteDir(dataDir, label string) string {
+	return filepath.Join(dataDir, "sites", label)
+}
+
+func sitesRoot(dataDir string) string {
+	return filepath.Join(dataDir, "sites")
+}
+
+// NewStagingDir creates a unique staging dir under DataDir/sites for one
+// deploy. Each deploy gets its own staging dir so concurrent deploys for one
+// label never share a path.
+func NewStagingDir(dataDir string) (string, error) {
+	root := sitesRoot(dataDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, ".stage-*")
+}
+
+// RemoveSite deletes a label's live files. It never touches staging dirs.
+func RemoveSite(dataDir, label string) error {
+	return os.RemoveAll(SiteDir(dataDir, label))
+}
+
+// ReplaceSite atomically swaps a staging dir into place as the label's live
+// files. The previous live dir (if any) moves aside to a unique backup path
+// so concurrent replaces never share a .old path.
+func ReplaceSite(dataDir, label, staging string) error {
+	return swapDir(SiteDir(dataDir, label), staging)
+}
+
+func swapDir(dest, staging string) error {
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err != nil {
+		if os.IsNotExist(err) {
+			if err := os.Rename(staging, dest); err != nil {
+				return err
+			}
+			return nil
+		}
+		return err
+	}
+	parent := filepath.Dir(dest)
+	tmp, err := os.MkdirTemp(parent, ".old-*")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(tmp); err != nil {
+		return err
+	}
+	backup := tmp
+	if err := os.Rename(dest, backup); err != nil {
+		return err
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		// Roll back on failure.
+		_ = os.Rename(backup, dest)
+		return err
+	}
+	_ = os.RemoveAll(backup)
+	return nil
+}
+
 // ExtractResult summarizes a deploy.
 type ExtractResult struct {
 	Files int
@@ -176,9 +292,35 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 	}
 	defer os.RemoveAll(staging)
 
+	res, err := ExtractToStaging(tarGz, staging, maxExpanded, maxFiles)
+	if err != nil {
+		return nil, err
+	}
+	if err := swapDir(dest, staging); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// ExtractToStaging unpacks a gzipped tar into an existing staging dir
+// without touching the live destination. Callers Upsert metadata first, then
+// ReplaceSite to swap staging live. Validation failures return an error for
+// which IsValidationError is true (400); infra/IO failures return raw errors
+// (500).
+func ExtractToStaging(tarGz io.Reader, staging string, maxExpanded int64, maxFiles int) (*ExtractResult, error) {
+	if maxExpanded <= 0 {
+		maxExpanded = MaxExpandedBytes
+	}
+	if maxFiles <= 0 {
+		maxFiles = MaxFiles
+	}
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return nil, err
+	}
+
 	gz, err := gzip.NewReader(tarGz)
 	if err != nil {
-		return nil, fmt.Errorf("bad gzip: %w", err)
+		return nil, validationWrap(err, "bad gzip")
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
@@ -191,7 +333,7 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("bad tar: %w", err)
+			return nil, validationWrap(err, "bad tar")
 		}
 		name := filepath.ToSlash(hdr.Name)
 		name = strings.TrimPrefix(name, "./")
@@ -200,11 +342,11 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 		}
 		// Reject absolute paths and escapes before cleaning.
 		if filepath.IsAbs(hdr.Name) || strings.HasPrefix(name, "/") {
-			return nil, fmt.Errorf("rejected absolute path %q", hdr.Name)
+			return nil, validationf("rejected absolute path %q", hdr.Name)
 		}
 		clean := filepath.Clean(name)
 		if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			return nil, fmt.Errorf("rejected escape %q", hdr.Name)
+			return nil, validationf("rejected escape %q", hdr.Name)
 		}
 		// Dotfiles and dot-directories are rejected: the brief requires
 		// deploys to REJECT dotfiles (400) rather than silently skipping,
@@ -212,12 +354,12 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 		// must not be served.
 		for _, part := range strings.Split(clean, string(filepath.Separator)) {
 			if strings.HasPrefix(part, ".") {
-				return nil, fmt.Errorf("rejected dotfile %q", hdr.Name)
+				return nil, validationf("rejected dotfile %q", hdr.Name)
 			}
 		}
 		target := filepath.Join(staging, clean)
 		if !strings.HasPrefix(target, staging+string(filepath.Separator)) && target != staging {
-			return nil, fmt.Errorf("rejected escape %q", hdr.Name)
+			return nil, validationf("rejected escape %q", hdr.Name)
 		}
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -226,11 +368,11 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			}
 		case tar.TypeReg, tar.TypeRegA:
 			if hdr.Size > MaxSingleFileBytes {
-				return nil, fmt.Errorf("file %q exceeds %d bytes", clean, MaxSingleFileBytes)
+				return nil, validationf("file %q exceeds %d bytes", clean, MaxSingleFileBytes)
 			}
 			res.Files++
 			if res.Files > maxFiles {
-				return nil, fmt.Errorf("archive exceeds %d files", maxFiles)
+				return nil, validationf("archive exceeds %d files", maxFiles)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return nil, err
@@ -242,41 +384,27 @@ func ExtractDist(tarGz io.Reader, dest string, maxExpanded int64, maxFiles int) 
 			n, err := io.Copy(f, io.LimitReader(tr, maxExpanded-total+1))
 			f.Close()
 			if err != nil {
-				return nil, err
+				if isDiskError(err) {
+					return nil, err
+				}
+				return nil, validationWrap(err, "bad tar data for %q", clean)
 			}
 			total += n
 			res.Bytes += n
 			if total > maxExpanded {
-				return nil, fmt.Errorf("archive expands past %d bytes", maxExpanded)
+				return nil, validationf("archive expands past %d bytes", maxExpanded)
 			}
 		default:
 			// Symlinks, hardlinks, devices, fifos: rejected. They enable
 			// path traversal and cross-user reads on shared hosting.
-			return nil, fmt.Errorf("rejected non-regular entry %q (type %c)", hdr.Name, hdr.Typeflag)
+			return nil, validationf("rejected non-regular entry %q (type %c)", hdr.Name, hdr.Typeflag)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(staging, "index.html")); err != nil {
-		return nil, errors.New("archive must contain a top-level index.html")
-	}
-	// Atomic swap: move old aside, move staging in, drop old.
-	old := dest + ".old"
-	os.RemoveAll(old)
-	if _, err := os.Stat(dest); err == nil {
-		if err := os.Rename(dest, old); err != nil {
-			return nil, err
-		}
-		defer os.RemoveAll(old)
-	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return nil, err
-	}
-	if err := os.Rename(staging, dest); err != nil {
-		// Roll back on failure.
-		if _, err2 := os.Stat(old); err2 == nil {
-			_ = os.Rename(old, dest)
+		if os.IsNotExist(err) {
+			return nil, validationf("archive must contain a top-level index.html")
 		}
 		return nil, err
 	}
-	os.RemoveAll(old)
 	return res, nil
 }
