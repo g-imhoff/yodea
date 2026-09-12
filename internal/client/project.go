@@ -23,8 +23,8 @@ type ProjectConfig struct {
 	Project string `json:"project"`
 }
 
-// CheckProject validates a project name. Thin wrapper over
-// sites.CheckProjectName preserving the CLI's error messages.
+// CheckProject validates a project name. It delegates directly to
+// sites.CheckProjectName with no local error text.
 func CheckProject(raw string) error {
 	return sites.CheckProjectName(raw)
 }
@@ -213,21 +213,16 @@ func Scaffold(dir, project string, force bool) error {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := writeNew(full, content, true, ""); err != nil {
+		if err := writeIfMissing(full, content); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeNew(path, content string, force bool, existsMsg string) error {
-	if _, err := os.Stat(path); err == nil && !force {
-		if existsMsg == "" {
-			existsMsg = "file exists"
-		}
-		return fmt.Errorf("%s: %s", path, existsMsg)
-	} else if err == nil {
-		return nil // force on link/scaffold means keep the user's file
+func writeIfMissing(path, content string) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil // keep the user's file
 	}
 	return os.WriteFile(path, []byte(content), 0o644)
 }
@@ -291,8 +286,8 @@ func PackDist(distDir string, w io.Writer) error {
 			return closeErr
 		}
 		count++
-		if count > 20000 {
-			return fmt.Errorf("dist exceeds 20000 files")
+		if count > sites.MaxFiles {
+			return fmt.Errorf("dist exceeds %d files", sites.MaxFiles)
 		}
 		return nil
 	})

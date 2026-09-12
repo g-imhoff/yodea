@@ -1259,8 +1259,8 @@ func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 }
 
 func hostOnly(hostport string) string {
-	// Kept for compatibility; new code uses normalizeHost which also
-	// lowercases and validates bracketed IPv6.
+	// Helper for isTestDomain only: strips an optional port via
+	// normalizeHost, falling back to a lowercased trim.
 	if h, ok := normalizeHost(hostport); ok {
 		return h
 	}
