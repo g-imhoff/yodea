@@ -767,3 +767,71 @@ func TestDevNoAuthGuard(t *testing.T) {
 		t.Fatalf("public-bind error = %q, want it to name the bind condition", err.Error())
 	}
 }
+
+// failAddFavoriteStore simulates a transport/store failure on AddFavorite
+// while reads still succeed, so POST /api/favorites must surface 500.
+type failAddFavoriteStore struct {
+	store.Storage
+	site *store.Site
+}
+
+func (f failAddFavoriteStore) SiteByLabel(_, _ string) *store.Site { return f.site }
+
+func (f failAddFavoriteStore) AddFavorite(_, _, _ string) error {
+	return errors.New("store unreachable")
+}
+
+func TestFavoriteAddStoreErrorReturns500(t *testing.T) {
+	s := newTestServer(t)
+	bob := devToken(t, "bob@example.com")
+	s.metadb = failAddFavoriteStore{
+		Storage: s.metadb,
+		site:    &store.Site{UserID: "alice", Project: "blog", Label: "alice-blog"},
+	}
+	rec := doReq(s, http.MethodPost, testDomain, "/api/favorites", bob,
+		strings.NewReader(`{"label":"alice-blog"}`), "application/json")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("favorite-add with failing store = %d, want 500 (%s)", rec.Code, rec.Body.String())
+	}
+	// Bad input still maps to 400, not 500.
+	rec = doReq(s, http.MethodPost, testDomain, "/api/favorites", bob,
+		strings.NewReader(`{"label":"-bad-"}`), "application/json")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("favorite-add bad label = %d, want 400", rec.Code)
+	}
+}
+
+// failDeleteStore simulates a transport/store failure on DeleteSite.
+type failDeleteStore struct{ store.Storage }
+
+func (failDeleteStore) DeleteSite(_, _, _ string) (*store.Site, error) {
+	return nil, errors.New("store unreachable")
+}
+
+func TestSiteDeleteStoreErrorReturns500(t *testing.T) {
+	s := newTestServer(t)
+	alice := devToken(t, "alice@example.com")
+	s.metadb = failDeleteStore{Storage: s.metadb}
+	rec := doReq(s, http.MethodDelete, testDomain, "/api/sites/blog", alice, nil, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("site delete with failing store = %d, want 500 (%s)", rec.Code, rec.Body.String())
+	}
+}
+
+// failRemoveFavoriteStore simulates a transport/store failure on
+// RemoveFavorite.
+type failRemoveFavoriteStore struct{ store.Storage }
+
+func (failRemoveFavoriteStore) RemoveFavorite(_, _, _ string) (bool, error) {
+	return false, errors.New("store unreachable")
+}
+
+func TestFavoriteRemoveStoreErrorReturns500(t *testing.T) {
+	s := newTestServer(t)
+	bob := devToken(t, "bob@example.com")
+	s.metadb = failRemoveFavoriteStore{Storage: s.metadb}
+	rec := doReq(s, http.MethodDelete, testDomain, "/api/favorites/alice-blog", bob, nil, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("favorite remove with failing store = %d, want 500 (%s)", rec.Code, rec.Body.String())
+	}
+}

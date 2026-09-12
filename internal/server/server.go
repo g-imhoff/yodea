@@ -804,6 +804,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request, project st
 	}
 	site, err := s.metadb.DeleteSite(token, userID, sites.Sanitize(project))
 	if err != nil {
+		log.Printf("delete failed user=%s project=%s label=%s cause=%v", userID, project, "", err)
 		writeErr(w, http.StatusInternalServerError, "could not delete site")
 		return
 	}
@@ -890,7 +891,8 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.metadb.AddFavorite(token, userID, body.Label); err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
+			log.Printf("favorite failed user=%s label=%s cause=%v", userID, body.Label, err)
+			writeErr(w, http.StatusInternalServerError, "could not add favorite")
 			return
 		}
 		writeJSON(w, http.StatusOK, favoriteRow{
@@ -924,6 +926,7 @@ func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
 	}
 	ok, err := s.metadb.RemoveFavorite(token, userID, label)
 	if err != nil {
+		log.Printf("unfavorite failed user=%s label=%s cause=%v", userID, label, err)
 		writeErr(w, http.StatusInternalServerError, "could not remove favorite")
 		return
 	}
