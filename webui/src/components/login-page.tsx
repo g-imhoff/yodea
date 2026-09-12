@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { login } from "@/lib/api"
 import { Button } from "@/components/ui/button"
@@ -15,6 +15,8 @@ import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 
 const FAILURE_TEXT = "Login failed. Check email and password."
+const SHAPE_TEXT = "Enter an email address or a dev username."
+const ERROR_ID = "yodea-login-error"
 
 const DEV_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/
 
@@ -34,13 +36,34 @@ export function LoginPage({
   const [password, setPassword] = useState("")
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [errorText, setErrorText] = useState(FAILURE_TEXT)
+  const emailRef = useRef<HTMLInputElement>(null)
+  const alertRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!cancelled) {
+      emailRef.current?.focus()
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (failed) {
+      alertRef.current?.focus()
+    }
+  }, [failed, errorText])
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
     if (pending) return
     const value = email.trim()
     if (!DEV_NAME_RE.test(value) && !isEmailShape(value)) {
+      setErrorText(SHAPE_TEXT)
       setFailed(true)
+      alertRef.current?.focus()
       return
     }
     setPending(true)
@@ -49,7 +72,9 @@ export function LoginPage({
       await login(value, password)
       onLoggedIn(next)
     } catch {
+      setErrorText(FAILURE_TEXT)
       setFailed(true)
+      alertRef.current?.focus()
       setPending(false)
     }
   }
@@ -65,15 +90,17 @@ export function LoginPage({
           <form onSubmit={onSubmit}>
             <FieldGroup>
               <Field>
-                <FieldLabel htmlFor="yodea-email">Email</FieldLabel>
+                <FieldLabel htmlFor="yodea-email">Email or username</FieldLabel>
                 <Input
                   id="yodea-email"
+                  ref={emailRef}
                   type="text"
                   inputMode="email"
                   autoComplete="username"
                   required
                   value={email}
                   aria-invalid={failed}
+                  aria-describedby={failed ? ERROR_ID : undefined}
                   onChange={(e) => setEmail(e.target.value)}
                 />
               </Field>
@@ -86,12 +113,13 @@ export function LoginPage({
                   required
                   value={password}
                   aria-invalid={failed}
+                  aria-describedby={failed ? ERROR_ID : undefined}
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </Field>
               {failed && (
-                <Alert variant="destructive">
-                  <AlertDescription>{FAILURE_TEXT}</AlertDescription>
+                <Alert variant="destructive" ref={alertRef} tabIndex={-1}>
+                  <AlertDescription id={ERROR_ID}>{errorText}</AlertDescription>
                 </Alert>
               )}
               <Field>
