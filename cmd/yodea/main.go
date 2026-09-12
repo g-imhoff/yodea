@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/g-imhoff/yodea/internal/client"
 	"golang.org/x/term"
@@ -65,7 +66,7 @@ func usage() {
 
   login --email E            log in via POST /api/session (session saved 0600;
                              password from $YODEA_PASSWORD or a hidden prompt)
-  init [project] [--dir D] [--force] [--link]
+  init [--dir D] [--force] [--link] [project]
       scaffold a fresh Vite React TS app, or link an existing folder
       (writes only yodea.json there; never overwrites user files)
   push [--dir D] [--project P]   validate React TS, pack dist/ as a raw
@@ -81,6 +82,9 @@ func cmdLogin(server string, args []string) error {
 	email := fs.String("email", os.Getenv("YODEA_EMAIL"), "login email ($YODEA_EMAIL)")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("usage: yodea login --email E (login takes options only, got unexpected %q)", fs.Arg(0))
 	}
 	if *email == "" {
 		return fmt.Errorf("login needs --email (or $YODEA_EMAIL)")
@@ -132,6 +136,14 @@ func cmdInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	for i := 0; i < fs.NArg(); i++ {
+		if strings.HasPrefix(fs.Arg(i), "-") {
+			return fmt.Errorf("flag %q must come before the project name; usage: yodea init [--dir D] [--force] [--link] [project]", fs.Arg(i))
+		}
+	}
+	if fs.NArg() > 1 {
+		return fmt.Errorf("init takes at most one project name (got %d); put flags before the project name; usage: yodea init [--dir D] [--force] [--link] [project]", fs.NArg())
+	}
 	project := ""
 	if fs.NArg() > 0 {
 		project = fs.Arg(0)
@@ -171,6 +183,9 @@ func cmdPush(server string, serverFlagSet bool, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("usage: yodea push [--dir D] [--project P] (got unexpected argument %q)", fs.Arg(0))
+	}
 	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
@@ -195,6 +210,9 @@ func cmdList(server string, serverFlagSet bool, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("usage: yodea list (got unexpected argument %q)", fs.Arg(0))
+	}
 	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
@@ -208,7 +226,7 @@ func cmdList(server string, serverFlagSet bool, args []string) error {
 		return nil
 	}
 	for _, s := range sites {
-		fmt.Printf("%s\t%s\t%d files\n", s.Project, s.Label, s.Files)
+		fmt.Printf("%q\t%q\t%d files\n", s.Project, s.Label, s.Files)
 	}
 	return nil
 }
@@ -218,8 +236,8 @@ func cmdDelete(server string, serverFlagSet bool, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() == 0 {
-		return fmt.Errorf("usage: yodea delete <project>")
+	if fs.NArg() != 1 {
+		return fmt.Errorf("usage: yodea delete <project> (takes exactly one project name)")
 	}
 	c, err := authed(server, serverFlagSet)
 	if err != nil {
@@ -229,6 +247,6 @@ func cmdDelete(server string, serverFlagSet bool, args []string) error {
 	if err := c.Delete(project); err != nil {
 		return err
 	}
-	fmt.Printf("deleted %s\n", project)
+	fmt.Printf("deleted %q\n", project)
 	return nil
 }
