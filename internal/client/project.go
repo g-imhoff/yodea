@@ -231,6 +231,10 @@ func writeIfMissing(path, content string) error {
 // dotfiles refused (the server rejects them), index.html required at top
 // level. Static dist only: symlinks and other specials are refused.
 func PackDist(distDir string, w io.Writer) error {
+	distInfo, err := os.Lstat(distDir)
+	if err != nil || distInfo.Mode()&os.ModeSymlink != 0 || !distInfo.IsDir() {
+		return fmt.Errorf("no regular dist/index.html in %s; prepare dist/index.html before pushing", distDir)
+	}
 	indexPath := filepath.Join(distDir, "index.html")
 	indexInfo, err := os.Lstat(indexPath)
 	if err != nil || !indexInfo.Mode().IsRegular() {

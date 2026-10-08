@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -390,13 +391,22 @@ func writeReactPushMarkers(t *testing.T, dir string, missing string) {
 func writeStaticDist(t *testing.T, dir string) string {
 	t.Helper()
 	dist := filepath.Join(dir, "dist")
-	if err := os.MkdirAll(filepath.Join(dist, "assets"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dist, "assets", "modules"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dist, "assets", "styles"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<h1>static</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dist, "assets", "app.js"), []byte("console.log('static')"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "modules", "app.mjs"), []byte("export const mode = 'static';"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "assets", "styles", "site.css"), []byte("body { color: rebeccapurple; }"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return dist
@@ -438,6 +448,7 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 	var gotPath string
 	var gotContentType string
 	var gotNames []string
+	gotFiles := map[string]string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotContentType = r.Header.Get("Content-Type")
@@ -459,6 +470,13 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 				return
 			}
 			gotNames = append(gotNames, h.Name)
+			body, err := io.ReadAll(tr)
+			if err != nil {
+				t.Errorf("read %q: %v", h.Name, err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			gotFiles[h.Name] = string(body)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"url":"https://demo.example/","project":"explicit","files":2,"bytes":10}`))
@@ -489,8 +507,18 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 	if gotContentType != "application/gzip" {
 		t.Fatalf("content type = %q, want application/gzip", gotContentType)
 	}
-	if strings.Join(gotNames, "\n") != "assets/app.js\nindex.html" {
-		t.Fatalf("archive names = %q, want dist-only relative files", gotNames)
+	wantNames := []string{"assets/app.js", "assets/modules/app.mjs", "assets/styles/site.css", "index.html"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("archive names = %q, want %q", gotNames, wantNames)
+	}
+	wantFiles := map[string]string{
+		"assets/app.js":          "console.log('static')",
+		"assets/modules/app.mjs": "export const mode = 'static';",
+		"assets/styles/site.css": "body { color: rebeccapurple; }",
+		"index.html":             "<h1>static</h1>",
+	}
+	if !reflect.DeepEqual(gotFiles, wantFiles) {
+		t.Fatalf("archive files = %#v, want %#v", gotFiles, wantFiles)
 	}
 	for _, name := range gotNames {
 		if strings.Contains(name, "package.json") || strings.Contains(name, "yodea.json") {
@@ -549,6 +577,18 @@ func TestPushStaticRejectsArchiveGuardsWithoutUpload(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(target, filepath.Join(dist, "link.js")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlinked dist", setup: func(t *testing.T, dir string) {
+			target := filepath.Join(dir, "built-dist")
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(target, "index.html"), []byte("<h1>static</h1>"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dir, "dist")); err != nil {
 				t.Fatal(err)
 			}
 		}},

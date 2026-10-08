@@ -467,6 +467,76 @@ func TestPackDistRequiresRegularIndex(t *testing.T) {
 	}
 }
 
+func TestPackDistRejectsSymlinkedDistRoot(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "built-dist")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dist := filepath.Join(root, "dist")
+	if err := os.Symlink(target, dist); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := PackDist(dist, &buf)
+	if err == nil {
+		t.Fatal("PackDist accepted a symlinked dist root")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("PackDist wrote %d bytes after rejecting symlinked dist root", buf.Len())
+	}
+}
+
+func TestPackDistExtractDistRejectsExpandedLimitWithoutReplacingLive(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("new index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "app.js"), []byte("new payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var packed bytes.Buffer
+	if err := PackDist(dist, &packed); err != nil {
+		t.Fatal(err)
+	}
+
+	live := filepath.Join(t.TempDir(), "site")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "index.html"), []byte("old index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	maxExpanded := int64(len("new index"))
+	_, err := sites.ExtractDist(bytes.NewReader(packed.Bytes()), live, maxExpanded, 0)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("archive expands past %d bytes", maxExpanded)) {
+		t.Fatalf("ExtractDist over expanded limit = %v, want limit error", err)
+	}
+	gotIndex, err := os.ReadFile(filepath.Join(live, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotIndex) != "old index" {
+		t.Fatalf("live index = %q, want unchanged old index", gotIndex)
+	}
+	gotKeep, err := os.ReadFile(filepath.Join(live, "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotKeep) != "keep" {
+		t.Fatalf("live keep file = %q, want unchanged keep", gotKeep)
+	}
+}
+
 func TestPackDistRejectsFileCountLimit(t *testing.T) {
 	dist := filepath.Join(t.TempDir(), "dist")
 	if err := os.MkdirAll(dist, 0o755); err != nil {
