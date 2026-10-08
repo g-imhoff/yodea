@@ -80,8 +80,9 @@ func usage() {
   init [--dir D] [--force] [--link] [project]
       scaffold a fresh Vite React TS app, or link an existing folder
       (writes only yodea.json there; never overwrites user files)
-  push [--dir D] [--project P]   validate React TS, pack dist/ as a raw
-      gzipped tar and upload; prints the preview URL
+  push [--dir D] [--project P] [--static]
+      publish an already built dist/ without a build step; default
+      validation checks React TS before packing and uploading
   list                           list your personal sites (GET /api/sites)
   delete <project>               delete one project
 
@@ -144,15 +145,16 @@ func initFlagSet() (*flag.FlagSet, *string, *bool, *bool) {
 	return fs, dir, force, link
 }
 
-func pushFlagSet() (*flag.FlagSet, *string, *string) {
+func pushFlagSet() (*flag.FlagSet, *string, *string, *bool) {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project folder")
 	projectFlag := fs.String("project", "", "project name (default: yodea.json, then folder name)")
-	setUsage(fs, "yodea [--server URL] push [--dir D] [--project P]",
-		"Check the folder is a Vite React TS app, pack dist/ (index.html\n"+
+	static := fs.Bool("static", false, "publish prepared dist/ without React TypeScript validation")
+	setUsage(fs, "yodea [--server URL] push [--dir D] [--project P] [--static]",
+		"Check the folder is a Vite React TS app unless --static, pack dist/ (index.html\n"+
 			"required) as a raw gzipped tar, and upload it. Prints the preview\n"+
 			"URL plus file and byte counts.")
-	return fs, dir, projectFlag
+	return fs, dir, projectFlag, static
 }
 
 func listFlagSet() *flag.FlagSet {
@@ -196,7 +198,7 @@ func showHelp(args []string) error {
 		fs.Usage()
 		return nil
 	case "push":
-		fs, _, _ := pushFlagSet()
+		fs, _, _, _ := pushFlagSet()
 		fs.SetOutput(os.Stdout)
 		fs.Usage()
 		return nil
@@ -315,21 +317,23 @@ func authed(server string, serverFlagSet bool) (*client.Client, error) {
 }
 
 func cmdPush(server string, serverFlagSet bool, args []string) error {
-	fs, dir, projectFlag := pushFlagSet()
+	fs, dir, projectFlag, static := pushFlagSet()
 	if stop, err := parseArgs(fs, args); err != nil {
 		return err
 	} else if stop {
 		return nil
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: yodea push [--dir D] [--project P] (got unexpected argument %q)", fs.Arg(0))
+		return fmt.Errorf("usage: yodea push [--dir D] [--project P] [--static] (got unexpected argument %q); push uploads an already built dist/ and does not build it", fs.Arg(0))
 	}
 	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
 	}
-	if err := client.ValidateReactTS(*dir); err != nil {
-		return err
+	if !*static {
+		if err := client.ValidateReactTS(*dir); err != nil {
+			return err
+		}
 	}
 	project, err := client.ReadProject(*dir, *projectFlag)
 	if err != nil {
