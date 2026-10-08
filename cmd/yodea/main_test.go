@@ -629,19 +629,32 @@ func TestPushDefaultAndStaticFalseRejectReactValidationMatrixWithoutUpload(t *te
 	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
 		t.Fatal(err)
 	}
-	markers := []string{"absent", "malformed", "react", "react-dom", "vite", "vite-config", "tsconfig", "tsx"}
+	markers := []struct {
+		missing string
+		want    string
+	}{
+		{missing: "absent", want: "not a Vite React TS app: no package.json"},
+		{missing: "malformed", want: "not a Vite React TS app: package.json does not parse"},
+		{missing: "react", want: `not a Vite React TS app: missing package.json dependency "react"`},
+		{missing: "react-dom", want: `not a Vite React TS app: missing package.json dependency "react-dom"`},
+		{missing: "vite", want: `not a Vite React TS app: missing package.json devDependency "vite"`},
+		{missing: "vite-config", want: "not a Vite React TS app: missing vite config (vite.config.ts)"},
+		{missing: "tsconfig", want: "not a Vite React TS app: missing tsconfig.json (TypeScript marker)"},
+		{missing: "tsx", want: "not a Vite React TS app: missing a .tsx source file (React marker)"},
+	}
 	for _, staticArg := range []string{"", "--static=false"} {
-		for _, missing := range markers {
-			t.Run(missing+"/"+staticArg, func(t *testing.T) {
+		for _, marker := range markers {
+			t.Run(marker.missing+"/"+staticArg, func(t *testing.T) {
 				requests = 0
 				dir := t.TempDir()
-				writeReactPushMarkers(t, dir, missing)
+				writeReactPushMarkers(t, dir, marker.missing)
+				writeStaticDist(t, dir)
 				args := []string{"--dir", dir, "--project", "demo"}
 				if staticArg != "" {
 					args = append(args, staticArg)
 				}
-				if err := cmdPush(srv.URL, true, args); err == nil {
-					t.Fatal("expected React TypeScript validation error")
+				if err := cmdPush(srv.URL, true, args); err == nil || !strings.Contains(err.Error(), marker.want) {
+					t.Fatalf("push error = %v, want React TypeScript validation error containing %q", err, marker.want)
 				}
 				if requests != 0 {
 					t.Fatalf("validation made %d HTTP requests", requests)
