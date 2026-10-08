@@ -69,8 +69,9 @@ func usage() {
   init [--dir D] [--force] [--link] [project]
       scaffold a fresh Vite React TS app, or link an existing folder
       (writes only yodea.json there; never overwrites user files)
-  push [--dir D] [--project P]   validate React TS, pack dist/ as a raw
-      gzipped tar and upload; prints the preview URL
+  push [--dir D] [--project P] [--static]
+      publish an already built dist/ without a build step; default
+      validation checks React TS before packing and uploading
   list                           list your personal sites (GET /api/sites)
   delete <project>               delete one project
 
@@ -180,18 +181,21 @@ func cmdPush(server string, serverFlagSet bool, args []string) error {
 	fs := flag.NewFlagSet("push", flag.ContinueOnError)
 	dir := fs.String("dir", ".", "project folder")
 	projectFlag := fs.String("project", "", "project name (default: yodea.json, then folder name)")
+	static := fs.Bool("static", false, "publish prepared dist/ without React TypeScript validation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		return fmt.Errorf("usage: yodea push [--dir D] [--project P] (got unexpected argument %q)", fs.Arg(0))
+		return fmt.Errorf("usage: yodea push [--dir D] [--project P] [--static] (got unexpected argument %q); push uploads an already built dist/ and does not build it", fs.Arg(0))
 	}
 	c, err := authed(server, serverFlagSet)
 	if err != nil {
 		return err
 	}
-	if err := client.ValidateReactTS(*dir); err != nil {
-		return err
+	if !*static {
+		if err := client.ValidateReactTS(*dir); err != nil {
+			return err
+		}
 	}
 	project, err := client.ReadProject(*dir, *projectFlag)
 	if err != nil {

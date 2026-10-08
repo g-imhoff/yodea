@@ -2,12 +2,16 @@ package client
 
 import (
 	"bytes"
+	"crypto/rand"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/g-imhoff/yodea/internal/sites"
 )
 
 func isolateSession(t *testing.T) string {
@@ -325,6 +329,30 @@ func TestReadProjectDotFallback(t *testing.T) {
 	}
 }
 
+func TestReadProjectPrecedence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "folder")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ConfigFile), []byte(`{"project":"config"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadProject(dir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "config" {
+		t.Fatalf("config project = %q, want config before folder fallback", got)
+	}
+	got, err = ReadProject(dir, "explicit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "explicit" {
+		t.Fatalf("explicit project = %q, want explicit before config", got)
+	}
+}
+
 func TestCheckProjectRejectsControlsAndEdgeWhitespace(t *testing.T) {
 	isolateSession(t)
 	for _, raw := range []string{
@@ -395,5 +423,165 @@ func TestDeploySendsRawTarball(t *testing.T) {
 	}
 	if gotCT != "application/gzip" {
 		t.Fatalf("Content-Type = %q, want raw tarball application/gzip", gotCT)
+	}
+}
+
+func TestPackDistRequiresRegularIndex(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		make func(t *testing.T, dist string)
+	}{
+		{name: "directory", make: func(t *testing.T, dist string) {
+			if err := os.Mkdir(filepath.Join(dist, "index.html"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink", make: func(t *testing.T, dist string) {
+			target := filepath.Join(filepath.Dir(dist), "index-target.html")
+			if err := os.WriteFile(target, []byte("ok"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(dist, "index.html")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dist := filepath.Join(t.TempDir(), "dist")
+			if err := os.MkdirAll(dist, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.make(t, dist)
+			var buf bytes.Buffer
+			err := PackDist(dist, &buf)
+			if err == nil {
+				t.Fatal("PackDist accepted a non-regular index.html")
+			}
+			if !strings.Contains(err.Error(), "dist/index.html") || !strings.Contains(err.Error(), "prepare") {
+				t.Fatalf("error = %v, want framework-neutral dist/index.html preparation guidance", err)
+			}
+			if strings.Contains(err.Error(), "npm") {
+				t.Fatalf("error names a framework-specific build command: %v", err)
+			}
+		})
+	}
+}
+
+func TestPackDistRejectsSymlinkedDistRoot(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "built-dist")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dist := filepath.Join(root, "dist")
+	if err := os.Symlink(target, dist); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := PackDist(dist, &buf)
+	if err == nil {
+		t.Fatal("PackDist accepted a symlinked dist root")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("PackDist wrote %d bytes after rejecting symlinked dist root", buf.Len())
+	}
+}
+
+func TestPackDistExtractDistRejectsExpandedLimitWithoutReplacingLive(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("new index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "app.js"), []byte("new payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var packed bytes.Buffer
+	if err := PackDist(dist, &packed); err != nil {
+		t.Fatal(err)
+	}
+
+	live := filepath.Join(t.TempDir(), "site")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "index.html"), []byte("old index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(live, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	maxExpanded := int64(len("new index"))
+	_, err := sites.ExtractDist(bytes.NewReader(packed.Bytes()), live, maxExpanded, 0)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("archive expands past %d bytes", maxExpanded)) {
+		t.Fatalf("ExtractDist over expanded limit = %v, want limit error", err)
+	}
+	gotIndex, err := os.ReadFile(filepath.Join(live, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotIndex) != "old index" {
+		t.Fatalf("live index = %q, want unchanged old index", gotIndex)
+	}
+	gotKeep, err := os.ReadFile(filepath.Join(live, "keep.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotKeep) != "keep" {
+		t.Fatalf("live keep file = %q, want unchanged keep", gotKeep)
+	}
+}
+
+func TestPackDistRejectsFileCountLimit(t *testing.T) {
+	dist := filepath.Join(t.TempDir(), "dist")
+	if err := os.MkdirAll(dist, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < sites.MaxFiles; i++ {
+		name := filepath.Join(dist, fmt.Sprintf("%05d.js", i))
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var buf bytes.Buffer
+	err := PackDist(dist, &buf)
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("dist exceeds %d files", sites.MaxFiles)) {
+		t.Fatalf("PackDist over file count = %v, want limit error", err)
+	}
+}
+
+func TestDeployRejectsCompressedSizeLimitBeforeRequest(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload := make([]byte, MaxUploadBytes+1<<20)
+	if _, err := rand.Read(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dist, "app.js"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := New(srv.URL, "dev")
+	_, err := c.Deploy("demo", dist)
+	if err == nil || !strings.Contains(err.Error(), "over the 30MB deploy limit") {
+		t.Fatalf("Deploy over compressed limit = %v, want limit error", err)
+	}
+	if requests != 0 {
+		t.Fatalf("over-limit deploy made %d HTTP requests", requests)
 	}
 }
