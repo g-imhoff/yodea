@@ -5,4 +5,4 @@ The password never comes from argv: set $YODEA_PASSWORD or type it at the hidden
 
 Options:
   -email string
-    	login email ($YODEA_EMAIL)
+    	login email (or $YODEA_EMAIL)

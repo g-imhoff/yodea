@@ -62,6 +62,26 @@ func TestLoginQuotesHostileIdentity(t *testing.T) {
 	}
 }
 
+func TestLoginUsesEnvEmailWithoutFlag(t *testing.T) {
+	t.Parallel()
+	env, _ := testEnv(t)
+	env["YODEA_EMAIL"] = "env@b.c"
+	env["YODEA_PASSWORD"] = "secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "yodea_session", Value: "tok"})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"user_id":"env-user"}`))
+	}))
+	defer srv.Close()
+	out, _, err := runCLI(t, env, "--server", srv.URL, "login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `"env-user"`) {
+		t.Fatalf("login with $YODEA_EMAIL should succeed, got %q", out)
+	}
+}
+
 func TestLoginPromptNeedsTerminal(t *testing.T) {
 	t.Parallel()
 	devNull, err := os.Open(os.DevNull)

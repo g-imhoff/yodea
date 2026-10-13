@@ -15,9 +15,8 @@ func TestParse(t *testing.T) {
 		wantErr string
 	}{
 		{cmd: loginCmd, args: []string{"--email", "a@b.c"}, want: &loginOptions{email: "a@b.c"}},
-		{cmd: loginCmd, env: map[string]string{"YODEA_EMAIL": "env@b.c"}, want: &loginOptions{email: "env@b.c"}},
-		{cmd: loginCmd, args: []string{"-email=flag@b.c"}, env: map[string]string{"YODEA_EMAIL": "env@b.c"}, want: &loginOptions{email: "flag@b.c"}},
-		{cmd: loginCmd, wantErr: "login needs --email (or $YODEA_EMAIL)"},
+		{cmd: loginCmd, args: []string{"-email=flag@b.c"}, want: &loginOptions{email: "flag@b.c"}},
+		{cmd: loginCmd, want: &loginOptions{}},
 		{cmd: loginCmd, args: []string{"--email", "a@b.c", "extra"}, wantErr: `usage: yodea login --email E (login takes options only, got unexpected "extra")`},
 		{cmd: loginCmd, args: []string{"--password", "x"}, wantErr: "flag provided but not defined: -password"},
 
