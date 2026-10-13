@@ -2,6 +2,7 @@ package server
 
 import (
 	"net"
+	"net/http"
 	"strings"
 )
 
@@ -67,6 +68,14 @@ func normalizeHost(hostport string) (string, bool) {
 		// instead of guessing which colon starts a port.
 		return "", false
 	}
+}
+
+func (s *Server) requireCentralHost(w http.ResponseWriter, r *http.Request) bool {
+	if host, ok := normalizeHost(r.Host); !ok || host != s.cfg.BaseDomain {
+		writeErr(w, "not_found", "not found")
+		return false
+	}
+	return true
 }
 
 func isNumericPort(p string) bool {

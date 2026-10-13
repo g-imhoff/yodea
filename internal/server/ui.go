@@ -75,21 +75,28 @@ func (s *Server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 
 // handleRoot routes the central dashboard versus preview subdomains.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	host, ok := normalizeHost(r.Host)
+	if host, ok := normalizeHost(r.Host); ok && host == s.cfg.BaseDomain {
+		s.handleDashboard(w, r)
+		return
+	}
+	label, ok := s.previewLabel(r.Host)
 	if !ok {
 		writeErr(w, "unknown_site", "unknown site")
 		return
 	}
-	if host == s.cfg.BaseDomain {
-		s.handleDashboard(w, r)
-		return
+	s.handlePreview(w, r, label)
+}
+
+func (s *Server) previewLabel(hostport string) (string, bool) {
+	host, ok := normalizeHost(hostport)
+	if !ok {
+		return "", false
 	}
 	label, ok := strings.CutSuffix(host, "."+s.cfg.BaseDomain)
 	if !ok || label == "" || strings.Contains(label, ".") {
-		writeErr(w, "unknown_site", "unknown site")
-		return
+		return "", false
 	}
-	s.handlePreview(w, r, label)
+	return label, true
 }
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {

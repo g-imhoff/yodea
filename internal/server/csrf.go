@@ -13,6 +13,8 @@ import (
 func (s *Server) tokenFor(r *http.Request) (token, userID string, err error) {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		token = strings.TrimPrefix(h, "Bearer ")
+	} else if cookieCount(r, "yodea_session") > 1 {
+		return "", "", errors.New("conflicting session cookies")
 	} else if c, cerr := r.Cookie("yodea_session"); cerr == nil {
 		token = c.Value
 	}

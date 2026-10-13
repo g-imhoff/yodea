@@ -555,8 +555,8 @@ func TestPreviewSandboxHeaders(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preview = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("Content-Security-Policy"); got != "sandbox allow-scripts" {
-		t.Fatalf("CSP = %q, want %q", got, "sandbox allow-scripts")
+	if got := rec.Header().Get("Content-Security-Policy"); got != "sandbox allow-scripts allow-same-origin" {
+		t.Fatalf("CSP = %q, want %q", got, "sandbox allow-scripts allow-same-origin")
 	}
 	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Fatalf("X-Frame-Options = %q, want DENY", got)

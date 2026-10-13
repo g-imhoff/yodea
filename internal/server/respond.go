@@ -22,7 +22,7 @@ func statusForCode(code string) int {
 		return http.StatusForbidden
 	case "bad_request", "bad_project", "rejected_upload":
 		return http.StatusBadRequest
-	case "label_taken":
+	case "label_taken", "preset_limit":
 		return http.StatusConflict
 	case "unknown_site", "no_such_project", "no_such_favorite", "not_found":
 		return http.StatusNotFound

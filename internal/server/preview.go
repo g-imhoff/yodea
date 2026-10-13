@@ -142,11 +142,13 @@ func serveFile(w http.ResponseWriter, r *http.Request, full string) {
 	// Shared parent-domain risk: previews run as <label>.<BaseDomain>,
 	// sibling to the central host under one parent domain, so a malicious
 	// preview could otherwise frame-bust, clickjack, or script against
-	// same-site context. Sandbox without allow-same-origin keeps each
-	// preview in an opaque origin (its JS cannot reach cookies, which are
-	// HttpOnly anyway, nor other previews), and DENY keeps previews
-	// unframeable. allow-scripts stays so static Vite bundles still run.
-	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts")
+	// same-site context. The sandbox keeps allow-scripts so static Vite
+	// bundles run and allow-same-origin so each preview keeps its own
+	// origin. Preview JS still cannot reach the session: cookies are
+	// HttpOnly, cookie-authed /api/* writes need the CSRF synchronizer
+	// token, and the /api/* session and data endpoints only answer on the
+	// central host. DENY keeps previews unframeable.
+	w.Header().Set("Content-Security-Policy", "sandbox allow-scripts allow-same-origin")
 	w.Header().Set("X-Frame-Options", "DENY")
 	// Conservative MIME: known web types by extension, octet-stream
 	// otherwise, so uploaded content can never sniff into script.
