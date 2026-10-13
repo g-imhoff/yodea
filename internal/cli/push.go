@@ -15,7 +15,7 @@ var pushCmd = &command{
 	long: "Check the folder is a Vite React TS app unless --static, pack dist/ (index.html\n" +
 		"required) as a raw gzipped tar, and upload it. Prints the preview\n" +
 		"URL plus file and byte counts.",
-	short: "publish an already built dist/ without a build step; default validation checks React TS before packing and uploading",
+	short:      "publish an already built dist/ without a build step; default validation checks React TS before packing and uploading",
 	newOptions: func() options { return &pushOptions{} },
 }
 
