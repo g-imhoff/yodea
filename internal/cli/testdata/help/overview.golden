@@ -1,15 +1,10 @@
 yodea [--server URL] <command> [options]
 
-  login --email E            log in via POST /api/session (session saved 0600;
-                             password from $YODEA_PASSWORD or a hidden prompt)
-  init [--dir D] [--force] [--link] [project]
-      scaffold a fresh Vite React TS app, or link an existing folder
-      (writes only yodea.json there; never overwrites user files)
-  push [--dir D] [--project P] [--static]
-      publish an already built dist/ without a build step; default
-      validation checks React TS before packing and uploading
-  list                           list your personal sites (GET /api/sites)
-  delete <project>               delete one project
+  login --email E                              log in via POST /api/session (session saved 0600; password from $YODEA_PASSWORD or a hidden prompt)
+  init [--dir D] [--force] [--link] [project]  scaffold a fresh Vite React TS app, or link an existing folder (writes only yodea.json there; never overwrites user files)
+  push [--dir D] [--project P] [--static]      publish an already built dist/ without a build step; default validation checks React TS before packing and uploading
+  list                                         list your personal sites (GET /api/sites)
+  delete <project>                             delete one project
 
 Run 'yodea <command> --help' or 'yodea help <command>' for command details.
 

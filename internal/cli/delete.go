@@ -7,9 +7,7 @@ var deleteCmd = &command{
 	synopsis:   "delete <project>",
 	usesServer: true,
 	long:       "Delete one project and its preview. Takes exactly one project name.",
-	summary: []string{
-		"delete <project>               delete one project",
-	},
+	short:      "delete one project",
 	newOptions: func() options { return &deleteOptions{} },
 }
 

@@ -10,7 +10,7 @@ import (
 
 func TestLoadSessionMissingFileSaysNotLoggedIn(t *testing.T) {
 	p := isolateSession(t) // points at a path that does not exist yet
-	if _, err := LoadSession(); err == nil {
+	if _, err := LoadSession(os.Getenv); err == nil {
 		t.Fatal("expected not-logged-in error for missing file, got nil")
 	} else if !strings.Contains(err.Error(), "not logged in") {
 		t.Fatalf("missing file error = %q, want 'not logged in'", err)
@@ -39,7 +39,7 @@ func TestLoadSessionPermissionDeniedIsNotNotLoggedIn(t *testing.T) {
 	if _, err := os.ReadFile(p); err == nil {
 		t.Skip("platform ignores file permission bits; cannot exercise EACCES")
 	}
-	_, err := LoadSession()
+	_, err := LoadSession(os.Getenv)
 	if err == nil {
 		t.Fatal("expected permission error, got nil")
 	}
@@ -53,7 +53,7 @@ func TestLoadSessionDirectoryAtPathIsMeaningful(t *testing.T) {
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := LoadSession()
+	_, err := LoadSession(os.Getenv)
 	if err == nil {
 		t.Fatal("expected error when a directory sits at the session path, got nil")
 	}
@@ -65,13 +65,13 @@ func TestLoadSessionDirectoryAtPathIsMeaningful(t *testing.T) {
 func TestSaveSessionOwnerOnlyBestEffort(t *testing.T) {
 	p := isolateSession(t)
 	want := Session{Server: "http://127.0.0.1:8093", Token: "tok-lock", UserID: "u1"}
-	if err := SaveSession(want); err != nil {
+	if err := SaveSession(want, os.Getenv); err != nil {
 		t.Fatal(err)
 	}
 	if runtime.GOOS == "windows" {
 		// Best effort on Windows: the ACL lockdown must not lock out the
 		// owner; the session must still round-trip.
-		got, err := LoadSession()
+		got, err := LoadSession(os.Getenv)
 		if err != nil {
 			t.Fatalf("session unreadable after Windows ACL lockdown: %v", err)
 		}

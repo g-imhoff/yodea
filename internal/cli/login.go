@@ -17,10 +17,7 @@ var loginCmd = &command{
 	usesServer: true,
 	long: "Log in via POST /api/session and save the session (0600 file).\n" +
 		"The password never comes from argv: set $YODEA_PASSWORD or type it at the hidden prompt.",
-	summary: []string{
-		"login --email E            log in via POST /api/session (session saved 0600;",
-		"                           password from $YODEA_PASSWORD or a hidden prompt)",
-	},
+	short:      "log in via POST /api/session (session saved 0600; password from $YODEA_PASSWORD or a hidden prompt)",
 	newOptions: func() options { return &loginOptions{} },
 }
 
@@ -28,21 +25,25 @@ type loginOptions struct {
 	email string
 }
 
-func (o *loginOptions) setFlags(fs *flag.FlagSet, getenv func(string) string) {
-	fs.StringVar(&o.email, "email", getenv("YODEA_EMAIL"), "login email ($YODEA_EMAIL)")
+func (o *loginOptions) setFlags(fs *flag.FlagSet, _ func(string) string) {
+	fs.StringVar(&o.email, "email", "", "login email (or $YODEA_EMAIL)")
 }
 
 func (o *loginOptions) parseArgs(c *command, args []string) error {
 	if len(args) > 0 {
 		return c.usageError("login takes options only, got unexpected %q", args[0])
 	}
-	if o.email == "" {
-		return fmt.Errorf("login needs --email (or $YODEA_EMAIL)")
-	}
 	return nil
 }
 
 func (o *loginOptions) run(a *app) error {
+	email := o.email
+	if email == "" {
+		email = a.getenv("YODEA_EMAIL")
+	}
+	if email == "" {
+		return fmt.Errorf("login needs --email (or $YODEA_EMAIL)")
+	}
 	password := a.getenv("YODEA_PASSWORD")
 	if password == "" {
 		var err error
@@ -54,17 +55,17 @@ func (o *loginOptions) run(a *app) error {
 			return fmt.Errorf("login needs a password (set $YODEA_PASSWORD or type it at the prompt)")
 		}
 	}
-	server := a.serverURL()
-	if err := client.New(server, "").Login(o.email, password); err != nil {
+	server := client.ResolveServer(a.global.server, a.global.serverSet, "", a.getenv)
+	if err := client.New(server, "").Login(email, password, a.getenv); err != nil {
 		return err
 	}
-	sess, err := client.LoadSession()
+	sess, err := client.LoadSession(a.getenv)
 	if err != nil {
 		return err
 	}
 	who := sess.UserID
 	if who == "" {
-		who = o.email
+		who = email
 	}
 	fmt.Fprintf(a.io.Out, "logged in as %q (%q)\n", who, server)
 	return nil

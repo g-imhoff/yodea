@@ -10,26 +10,20 @@ import (
 	"github.com/g-imhoff/yodea/internal/client"
 )
 
-// isolateSession points the client's session file at a temp dir. The
-// client package reads YODEA_SESSION_FILE from the process environment.
-func isolateSession(t *testing.T) string {
+// testEnv returns an env map with a fresh session file plus a getenv
+// reading it. Tests seed sessions with client.SaveSession(s, getenv) and
+// run the CLI with runCLI(t, env, ...): the process environment stays
+// untouched, so the test can be parallel.
+func testEnv(t *testing.T) (map[string]string, func(string) string) {
 	t.Helper()
-	p := filepath.Join(t.TempDir(), "session.json")
-	t.Setenv("YODEA_SESSION_FILE", p)
-	return p
+	env := map[string]string{"YODEA_SESSION_FILE": filepath.Join(t.TempDir(), "session.json")}
+	return env, func(key string) string { return env[key] }
 }
 
-// newTestApp returns an app that writes to buffers and reads YODEA_EMAIL
-// and YODEA_PASSWORD from env. The client package reads YODEA_SERVER,
-// YODEA_DEV and YODEA_SESSION_FILE from the process environment, so env
-// must not hold them: use t.Setenv or isolateSession.
+// newTestApp returns an app that writes to buffers and reads every
+// variable from env.
 func newTestApp(t *testing.T, env map[string]string) (*app, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
-	for key := range env {
-		if key != "YODEA_EMAIL" && key != "YODEA_PASSWORD" {
-			t.Fatalf("env[%q] has no effect: the client package reads it from the process environment (use t.Setenv)", key)
-		}
-	}
 	var stdout, stderr bytes.Buffer
 	a := &app{
 		io:     IOStreams{In: strings.NewReader(""), Out: &stdout, ErrOut: &stderr},
@@ -55,11 +49,14 @@ func TestMainExitStatus(t *testing.T) {
 		wantStdout string // prefix
 		wantStderr string
 	}{
-		{nil, 1, "", "yodea: usage: yodea [--server URL] <login|init|push|list|delete> [options]\n"},
+		{nil, 2, "", "yodea: usage: yodea [--server URL] <login|init|push|list|delete> [options]\n"},
 		{[]string{"help"}, 0, "yodea [--server URL] <command> [options]\n", ""},
 		{[]string{"bogus"}, 1, "", "yodea: unknown command \"bogus\" (want login, init, push, list, or delete)\n"},
 		{[]string{"help", "bogus"}, 1, "", "yodea: unknown command \"bogus\" (want login, init, push, list, or delete)\n"},
-		{[]string{"--server"}, 1, "", "yodea: usage: yodea --server URL <command> [options]\n"},
+		{[]string{"--server"}, 2, "", "yodea: usage: yodea --server URL <command> [options]\n"},
+		// A bad flag prints the flag error plus the command help once, on
+		// stderr, and Main adds no "yodea:" line of its own.
+		{[]string{"push", "--bad-flag"}, 2, "", "flag provided but not defined: -bad-flag\n" + golden(t, "push")},
 		// The flag package prints this help on stderr, and Main adds nothing.
 		{[]string{"list", "--h"}, 0, "", golden(t, "list")},
 	}
@@ -124,13 +121,12 @@ func TestParseGlobal(t *testing.T) {
 }
 
 func TestAuthedExplicitFlagWins(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
-	if err := client.SaveSession(client.Session{Server: "http://saved.example", Token: "tok", UserID: "u"}); err != nil {
+	t.Parallel()
+	env, getenv := testEnv(t)
+	if err := client.SaveSession(client.Session{Server: "http://saved.example", Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
-	a, _, _ := newTestApp(t, nil)
+	a, _, _ := newTestApp(t, env)
 	a.global = globalOptions{server: "http://flag.example", serverSet: true}
 	c, err := a.authed()
 	if err != nil {
@@ -142,13 +138,12 @@ func TestAuthedExplicitFlagWins(t *testing.T) {
 }
 
 func TestAuthedFallsBackToSessionOnlyWithoutFlagOrEnv(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
-	if err := client.SaveSession(client.Session{Server: "http://saved.example", Token: "tok", UserID: "u"}); err != nil {
+	t.Parallel()
+	env, getenv := testEnv(t)
+	if err := client.SaveSession(client.Session{Server: "http://saved.example", Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
-	a, _, _ := newTestApp(t, nil)
+	a, _, _ := newTestApp(t, env)
 	c, err := a.authed()
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +152,7 @@ func TestAuthedFallsBackToSessionOnlyWithoutFlagOrEnv(t *testing.T) {
 		t.Fatalf("want saved session server, got %q", c.Server)
 	}
 	// Explicit env beats the saved session.
-	t.Setenv("YODEA_SERVER", "http://env.example")
+	env["YODEA_SERVER"] = "http://env.example"
 	c, err = a.authed()
 	if err != nil {
 		t.Fatal(err)

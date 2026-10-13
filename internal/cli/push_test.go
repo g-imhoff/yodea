@@ -17,7 +17,7 @@ import (
 )
 
 func TestPushRejectsPositional(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
 	_, _, err := runCLI(t, nil, "--server", "http://127.0.0.1:8093", "push", "extra")
 	if err == nil {
 		t.Fatal("expected push with positional to fail, got nil")
@@ -34,9 +34,8 @@ func TestPushRejectsPositional(t *testing.T) {
 }
 
 func TestPushQuotesHostileProjectAndURL(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
+	t.Parallel()
+	env, getenv := testEnv(t)
 	hostileProject := "evil\tproj\ninject"
 	hostileURL := "https://example.test/a\tb\nc"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +43,7 @@ func TestPushQuotesHostileProjectAndURL(t *testing.T) {
 		fmt.Fprintf(w, `{"url":%q,"project":%q,"label":"x","files":2,"bytes":10}`, hostileURL, hostileProject)
 	}))
 	defer srv.Close()
-	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -70,7 +69,7 @@ func TestPushQuotesHostileProjectAndURL(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "dist", "index.html"), []byte("<h1>hi</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := runCLI(t, nil, "--server", srv.URL, "push", "--dir", dir, "--project", "demo")
+	out, _, err := runCLI(t, env, "--server", srv.URL, "push", "--dir", dir, "--project", "demo")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,6 +155,7 @@ func writeStaticDist(t *testing.T, dir string) string {
 }
 
 func TestUsageDescribesStaticPush(t *testing.T) {
+	t.Parallel()
 	out, _, err := runCLI(t, nil, "help")
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +168,7 @@ func TestUsageDescribesStaticPush(t *testing.T) {
 }
 
 func TestPushFlagHelpDescribesStaticMode(t *testing.T) {
+	t.Parallel()
 	out, _, err := runCLI(t, nil, "--server", "http://127.0.0.1:8093", "push", "--help")
 	if err != nil {
 		t.Fatalf("push --help returned error: %v", err)
@@ -180,9 +181,8 @@ func TestPushFlagHelpDescribesStaticMode(t *testing.T) {
 }
 
 func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
+	t.Parallel()
+	env, getenv := testEnv(t)
 	var gotPath string
 	var gotContentType string
 	var gotNames []string
@@ -220,7 +220,7 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 		_, _ = w.Write([]byte(`{"url":"https://demo.example/","project":"explicit","files":2,"bytes":10}`))
 	}))
 	defer srv.Close()
-	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -234,7 +234,7 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "dist")); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := runCLI(t, nil, "--server", srv.URL, "push", "--dir", dir, "--project", "explicit", "--static"); err != nil {
+	if _, _, err := runCLI(t, env, "--server", srv.URL, "push", "--dir", dir, "--project", "explicit", "--static"); err != nil {
 		t.Fatal(err)
 	}
 	if gotPath != "/api/sites/explicit/deploy" {
@@ -264,9 +264,8 @@ func TestPushStaticUploadsOnlyDistAndUsesProjectPrecedence(t *testing.T) {
 }
 
 func TestPushStaticRejectsArchiveGuardsWithoutUpload(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
+	t.Parallel()
+	env, getenv := testEnv(t)
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -274,7 +273,7 @@ func TestPushStaticRejectsArchiveGuardsWithoutUpload(t *testing.T) {
 		_, _ = w.Write([]byte(`{"url":"https://demo.example/","project":"demo","files":1,"bytes":1}`))
 	}))
 	defer srv.Close()
-	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -341,7 +340,7 @@ func TestPushStaticRejectsArchiveGuardsWithoutUpload(t *testing.T) {
 			if tc.name == "invalid project" {
 				args = []string{"--server", srv.URL, "push", "--dir", dir, "--project", "-bad-", "--static"}
 			}
-			if _, _, err := runCLI(t, nil, args...); err == nil {
+			if _, _, err := runCLI(t, env, args...); err == nil {
 				t.Fatal("expected static push guard error")
 			}
 			if requests != 0 {
@@ -352,9 +351,8 @@ func TestPushStaticRejectsArchiveGuardsWithoutUpload(t *testing.T) {
 }
 
 func TestPushDefaultAndStaticFalseRejectReactValidationMatrixWithoutUpload(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
+	t.Parallel()
+	env, getenv := testEnv(t)
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
@@ -362,7 +360,7 @@ func TestPushDefaultAndStaticFalseRejectReactValidationMatrixWithoutUpload(t *te
 		_, _ = w.Write([]byte(`{"url":"https://demo.example/","project":"demo","files":1,"bytes":1}`))
 	}))
 	defer srv.Close()
-	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
 	markers := []struct {
@@ -389,7 +387,7 @@ func TestPushDefaultAndStaticFalseRejectReactValidationMatrixWithoutUpload(t *te
 				if staticArg != "" {
 					args = append(args, staticArg)
 				}
-				if _, _, err := runCLI(t, nil, args...); err == nil || !strings.Contains(err.Error(), marker.want) {
+				if _, _, err := runCLI(t, env, args...); err == nil || !strings.Contains(err.Error(), marker.want) {
 					t.Fatalf("push error = %v, want React TypeScript validation error containing %q", err, marker.want)
 				}
 				if requests != 0 {

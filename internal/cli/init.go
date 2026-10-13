@@ -16,11 +16,7 @@ var initCmd = &command{
 		"Linking writes only yodea.json there; scaffolding never overwrites\n" +
 		"existing files. Without a project name the folder base name wins.\n" +
 		"Flags must come before the project name.",
-	summary: []string{
-		"init [--dir D] [--force] [--link] [project]",
-		"    scaffold a fresh Vite React TS app, or link an existing folder",
-		"    (writes only yodea.json there; never overwrites user files)",
-	},
+	short:      "scaffold a fresh Vite React TS app, or link an existing folder (writes only yodea.json there; never overwrites user files)",
 	newOptions: func() options { return &initOptions{} },
 }
 
@@ -40,11 +36,11 @@ func (o *initOptions) setFlags(fs *flag.FlagSet, _ func(string) string) {
 func (o *initOptions) parseArgs(c *command, args []string) error {
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
-			return fmt.Errorf("flag %q must come before the project name; usage: %s", arg, c.usage())
+			return &usageError{fmt.Sprintf("flag %q must come before the project name; usage: %s", arg, c.usage())}
 		}
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("init takes at most one project name (got %d); put flags before the project name; usage: %s", len(args), c.usage())
+		return &usageError{fmt.Sprintf("init takes at most one project name (got %d); put flags before the project name; usage: %s", len(args), c.usage())}
 	}
 	if len(args) == 1 {
 		o.project = args[0]

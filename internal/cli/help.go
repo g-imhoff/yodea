@@ -14,7 +14,7 @@ func (a *app) help(args []string) error {
 		return nil
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("usage: yodea help [command] (takes at most one topic, got %d)", len(args))
+		return &usageError{fmt.Sprintf("usage: yodea help [command] (takes at most one topic, got %d)", len(args))}
 	}
 	c := lookup(args[0])
 	if c == nil {
@@ -39,12 +39,16 @@ func (c *command) printHelp(fs *flag.FlagSet) {
 }
 
 func (a *app) printOverview() {
+	width := 0
+	for _, c := range commands {
+		if len(c.synopsis) > width {
+			width = len(c.synopsis)
+		}
+	}
 	var b strings.Builder
 	b.WriteString("yodea [--server URL] <command> [options]\n\n")
 	for _, c := range commands {
-		for _, line := range c.summary {
-			b.WriteString("  " + line + "\n")
-		}
+		fmt.Fprintf(&b, "  %-*s  %s\n", width, c.synopsis, c.short)
 	}
 	b.WriteString("\nRun 'yodea <command> --help' or 'yodea help <command>' for command details.\n\n" +
 		"Server: --server URL (or --server=URL), else $YODEA_SERVER, else localhost:8093 when $YODEA_DEV=1, else production.\n")

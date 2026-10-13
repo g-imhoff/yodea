@@ -19,10 +19,9 @@ type command struct {
 	// shows the global [--server URL].
 	usesServer bool
 	long       string // what the command does, printed under the usage line
-	// summary is the command's entry in the overview, one string per
-	// line, aligned by hand. The first line starts with synopsis, which
-	// TestOverviewShowsSynopsis checks.
-	summary []string
+	// short is the command's one-line entry in the overview. The overview
+	// is generated from synopsis and short, so the two cannot drift apart.
+	short string
 	// newOptions returns empty options for one run of the command.
 	newOptions func() options
 }
@@ -38,6 +37,23 @@ type options interface {
 	// run does the work.
 	run(a *app) error
 }
+
+// usageError marks errors that misuse the command line: bad arguments or
+// bad global options. Main prints them with exit status 2, the same code
+// the flag package uses. The message keeps the "usage: ..." text the
+// tests match on.
+type usageError struct{ msg string }
+
+func (e *usageError) Error() string { return e.msg }
+
+// flagError wraps a flag package failure. The flag package already wrote
+// the error plus the command help to the output, so Main exits 2 without
+// printing it again.
+type flagError struct{ err error }
+
+func (e *flagError) Error() string { return e.err.Error() }
+
+func (e *flagError) Unwrap() error { return e.err }
 
 // noFlags is embedded by the options of commands that take no flags.
 type noFlags struct{}
@@ -94,7 +110,10 @@ func (a *app) parse(c *command, args []string) (options, error) {
 		fs.SetOutput(a.io.Out)
 	}
 	if err := fs.Parse(args); err != nil {
-		return nil, err
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, err
+		}
+		return nil, &flagError{err}
 	}
 	if err := o.parseArgs(c, fs.Args()); err != nil {
 		return nil, err
@@ -134,5 +153,5 @@ func (c *command) usage() string {
 // usageError reports bad arguments to c. The message quotes c's usage
 // line without the global [--server URL].
 func (c *command) usageError(format string, args ...any) error {
-	return fmt.Errorf("usage: yodea %s (%s)", c.synopsis, fmt.Sprintf(format, args...))
+	return &usageError{fmt.Sprintf("usage: yodea %s (%s)", c.synopsis, fmt.Sprintf(format, args...))}
 }

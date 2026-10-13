@@ -24,14 +24,28 @@ type IOStreams struct {
 }
 
 // Main runs yodea with args (without the program name) and returns the
-// process exit status. getenv, normally os.Getenv, reads the variables
-// this package uses (YODEA_EMAIL, YODEA_PASSWORD); the client package
-// still reads its own (YODEA_SERVER, YODEA_DEV, YODEA_SESSION_FILE).
+// process exit status: 0 for success, 2 for command-line misuse (bad
+// arguments or flags, the flag package's code), 1 for runtime failures.
+// getenv, normally os.Getenv, reads the variables the CLI uses
+// (YODEA_EMAIL, YODEA_PASSWORD, YODEA_SERVER, YODEA_DEV,
+// YODEA_SESSION_FILE).
 func Main(args []string, streams IOStreams, getenv func(string) string) int {
 	a := &app{io: streams, getenv: getenv}
 	if err := a.run(args); err != nil {
-		fmt.Fprintln(streams.ErrOut, "yodea:", err)
-		return 1
+		var ue *usageError
+		var fe *flagError
+		switch {
+		case errors.As(err, &fe):
+			// The flag package already printed the error and the
+			// command help; print nothing more.
+			return 2
+		case errors.As(err, &ue):
+			fmt.Fprintln(streams.ErrOut, "yodea:", err)
+			return 2
+		default:
+			fmt.Fprintln(streams.ErrOut, "yodea:", err)
+			return 1
+		}
 	}
 	return 0
 }
@@ -54,7 +68,7 @@ type globalOptions struct {
 // command.
 func (a *app) run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: yodea [--server URL] <%s> [options]", strings.Join(commandNames(), "|"))
+		return &usageError{fmt.Sprintf("usage: yodea [--server URL] <%s> [options]", strings.Join(commandNames(), "|"))}
 	}
 	g, rest, err := parseGlobal(args)
 	if err != nil {
@@ -78,7 +92,7 @@ func (a *app) run(args []string) error {
 // including a second --server, is left for dispatch, which treats it as
 // help or an unknown command.
 func parseGlobal(args []string) (globalOptions, []string, error) {
-	errUsage := errors.New("usage: yodea --server URL <command> [options]")
+	errUsage := &usageError{"usage: yodea --server URL <command> [options]"}
 	arg := args[0]
 	switch {
 	case arg == "--server" || arg == "-server":
@@ -96,19 +110,14 @@ func parseGlobal(args []string) (globalOptions, []string, error) {
 	return globalOptions{}, args, nil
 }
 
-// serverURL resolves --server with client.ResolveServer.
-func (a *app) serverURL() string {
-	return client.ResolveServer(a.global.server)
-}
-
 // authed returns a client for the saved session. An explicit --server
 // always wins. The saved session server is used only when no flag and no
 // YODEA_SERVER and no YODEA_DEV pick one.
 func (a *app) authed() (*client.Client, error) {
-	sess, err := client.LoadSession()
+	sess, err := client.LoadSession(a.getenv)
 	if err != nil {
 		return nil, err
 	}
-	srv := client.EffectiveServer(a.serverURL(), a.global.serverSet, sess.Server)
+	srv := client.ResolveServer(a.global.server, a.global.serverSet, sess.Server, a.getenv)
 	return client.New(srv, sess.Token), nil
 }

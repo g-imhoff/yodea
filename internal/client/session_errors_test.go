@@ -16,14 +16,14 @@ func TestSessionUnreadableReturnsPermissionError(t *testing.T) {
 		t.Skip("root bypasses file permissions; chmod 000 is not denied for euid 0")
 	}
 	p := isolateSession(t)
-	if err := SaveSession(Session{Server: "http://127.0.0.1:8093", Token: "tok123", UserID: "u1"}); err != nil {
+	if err := SaveSession(Session{Server: "http://127.0.0.1:8093", Token: "tok123", UserID: "u1"}, os.Getenv); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(p, 0o000); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
-	if _, err := LoadSession(); err == nil {
+	if _, err := LoadSession(os.Getenv); err == nil {
 		t.Fatal("LoadSession with unreadable file = nil, want permission error")
 	} else if strings.Contains(err.Error(), "not logged in") {
 		t.Fatalf("LoadSession unreadable = %v, want permission error without 'not logged in' hint", err)
@@ -44,7 +44,7 @@ func TestSessionSaveReadOnlyDirFails(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	t.Setenv("YODEA_SESSION_FILE", filepath.Join(dir, "session.json"))
-	if err := SaveSession(Session{Server: "http://x", Token: "tok", UserID: "u"}); err == nil {
+	if err := SaveSession(Session{Server: "http://x", Token: "tok", UserID: "u"}, os.Getenv); err == nil {
 		t.Fatal("SaveSession in read-only dir = nil, want permission error")
 	} else if !strings.Contains(err.Error(), "permission denied") {
 		t.Fatalf("SaveSession read-only = %v, want permission denied", err)
@@ -58,7 +58,7 @@ func TestSessionSaveDiskFullFails(t *testing.T) {
 		t.Skipf("no /dev/full to simulate ENOSPC: %v", err)
 	}
 	t.Setenv("YODEA_SESSION_FILE", "/dev/full")
-	err := SaveSession(Session{Server: "http://x", Token: "tok", UserID: "u"})
+	err := SaveSession(Session{Server: "http://x", Token: "tok", UserID: "u"}, os.Getenv)
 	if err == nil {
 		t.Fatal("SaveSession to /dev/full = nil, want ENOSPC error")
 	}

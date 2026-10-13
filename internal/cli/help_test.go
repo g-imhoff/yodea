@@ -79,16 +79,18 @@ func TestHelpGolden(t *testing.T) {
 	}
 }
 
-// TestOverviewShowsSynopsis checks that each command's overview entry,
-// which is aligned by hand, starts with the synopsis its help prints.
+// TestOverviewShowsSynopsis checks that the overview lists every command
+// under the synopsis its help prints, so the two cannot drift apart: the
+// overview is generated from the same table.
 func TestOverviewShowsSynopsis(t *testing.T) {
 	t.Parallel()
+	out, _, err := runCLI(t, nil, "help")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range commands {
-		if !strings.HasPrefix(c.synopsis+" ", c.name+" ") {
-			t.Errorf("%s: synopsis %q does not start with the command name", c.name, c.synopsis)
-		}
-		if len(c.summary) == 0 || !strings.HasPrefix(c.summary[0]+" ", c.synopsis+" ") {
-			t.Errorf("%s: overview entry %q does not start with the synopsis %q", c.name, c.summary, c.synopsis)
+		if !strings.Contains(out, "  "+c.synopsis) {
+			t.Errorf("overview does not list synopsis %q:\n%s", c.synopsis, out)
 		}
 	}
 }
