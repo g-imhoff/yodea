@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -765,6 +766,80 @@ func TestDevNoAuthGuard(t *testing.T) {
 		t.Fatal("New(DevNoAuth, 0.0.0.0) succeeded, want refusal")
 	} else if !strings.Contains(err.Error(), "bind") {
 		t.Fatalf("public-bind error = %q, want it to name the bind condition", err.Error())
+	}
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() {
+		log.SetOutput(prev)
+		log.SetFlags(prevFlags)
+	})
+	return &buf
+}
+
+func TestAllowInsecureDevPublicStartsProductionInvocation(t *testing.T) {
+	logs := captureLog(t)
+	s, err := New(Config{
+		Addr:                   "0.0.0.0:8093",
+		DataDir:                t.TempDir(),
+		BaseDomain:             "previews.example.com",
+		StoreBackend:           "local",
+		DevNoAuth:              true,
+		AllowInsecureDevPublic: true,
+	})
+	if err != nil {
+		t.Fatalf("New(dev, 0.0.0.0, previews.example.com, allow-insecure-dev-public) = %v, want start", err)
+	}
+	s.Close()
+	out := logs.String()
+	if !strings.Contains(out, "WARNING") || !strings.Contains(out, "forgeable") || !strings.Contains(out, "previews.example.com") {
+		t.Fatalf("startup log = %q, want a loud forgeable-token warning naming the domain", out)
+	}
+}
+
+func TestAllowInsecureDevPublicSkipsBothRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name, addr, domain, wantErr string
+	}{
+		{"public bind and domain", "0.0.0.0:8093", "previews.example.com", "bind"},
+		{"public bind, test domain", "0.0.0.0:8093", testDomain, "bind"},
+		{"loopback bind, public domain", "127.0.0.1:8093", "example.com", "base domain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			captureLog(t)
+			s, err := New(Config{Addr: tc.addr, DataDir: t.TempDir(), BaseDomain: tc.domain, DevNoAuth: true})
+			if err == nil {
+				s.Close()
+				t.Fatalf("New without escape hatch succeeded, want refusal")
+			}
+			if !strings.Contains(err.Error(), "dev mode refused") || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("refusal = %q, want dev mode refused naming %q", err.Error(), tc.wantErr)
+			}
+			s, err = New(Config{Addr: tc.addr, DataDir: t.TempDir(), BaseDomain: tc.domain, DevNoAuth: true, AllowInsecureDevPublic: true})
+			if err != nil {
+				t.Fatalf("New with escape hatch = %v, want start", err)
+			}
+			s.Close()
+		})
+	}
+}
+
+func TestAllowInsecureDevPublicKeepsDevAuth(t *testing.T) {
+	captureLog(t)
+	s, err := New(Config{Addr: "0.0.0.0:8093", DataDir: t.TempDir(), BaseDomain: "previews.example.com", DevNoAuth: true, AllowInsecureDevPublic: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+	if rec := doReq(s, http.MethodGet, "previews.example.com", "/api/sites", "", nil, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anon /api/sites = %d, want 401", rec.Code)
+	}
+	if rec := doReq(s, http.MethodGet, "previews.example.com", "/api/sites", "dev:alice", nil, ""); rec.Code != http.StatusOK {
+		t.Fatalf("dev token /api/sites = %d (%s), want 200", rec.Code, rec.Body.String())
 	}
 }
 

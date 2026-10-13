@@ -34,6 +34,7 @@ func loadConfig(args []string, getenv func(string) string, output io.Writer) (se
 	fs.StringVar(&cfg.DataDir, "data-dir", env("YODEA_DATA_DIR", ""), "metadata plus sites directory")
 	fs.StringVar(&cfg.BaseDomain, "domain", env("YODEA_BASE_DOMAIN", ""), "central host, e.g. previews.example.com")
 	fs.StringVar(&cfg.StoreBackend, "store", env("YODEA_STORE", "local"), "metadata backend: local or supabase")
+	fs.BoolVar(&cfg.AllowInsecureDevPublic, "allow-insecure-dev-public", getenv("YODEA_ALLOW_INSECURE_DEV_PUBLIC") == "1", "Escape hatch for a legacy --dev deployment on a public domain (forgeable tokens)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return server.Config{}, flagError{err}
 	}

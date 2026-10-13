@@ -56,6 +56,8 @@ type Config struct {
 	StoreBackend  string // "local" (default) or "supabase"
 	DevNoAuth     bool
 	SecureCookies bool
+
+	AllowInsecureDevPublic bool
 }
 
 // Server serves the API, the dashboard, and the preview subdomains.
@@ -85,8 +87,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	// Production guard: DevNoAuth accepts forged `dev` / `dev:<id>`
 	// tokens, so refuse to start unless the bind is loopback AND the
-	// domain is a test/local name. Lives in New so all binaries share it.
-	if cfg.DevNoAuth {
+	// domain is a test/local name, or AllowInsecureDevPublic is set.
+	// Lives in New so all binaries share it.
+	if cfg.DevNoAuth && cfg.AllowInsecureDevPublic {
+		log.Printf("WARNING: INSECURE: dev mode on public domain %q (bind %s) via --allow-insecure-dev-public: dev tokens (dev, dev:<id>) are forgeable, anyone who can reach this server can act as any user", cfg.BaseDomain, cfg.Addr)
+	} else if cfg.DevNoAuth {
 		if !isLoopbackBind(cfg.Addr) {
 			return nil, fmt.Errorf("dev mode refused: bind address %q is not loopback (must bind 127.0.0.1, ::1, or localhost)", cfg.Addr)
 		}
