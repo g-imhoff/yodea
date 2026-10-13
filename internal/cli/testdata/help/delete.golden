@@ -1,0 +1,3 @@
+usage: yodea [--server URL] delete <project>
+
+Delete one project and its preview. Takes exactly one project name.

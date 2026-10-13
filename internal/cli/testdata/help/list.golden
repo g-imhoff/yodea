@@ -1,0 +1,4 @@
+usage: yodea [--server URL] list
+
+List your personal sites (GET /api/sites): one quoted row per
+project with its label and file count.

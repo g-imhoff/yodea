@@ -1,0 +1,13 @@
+usage: yodea [--server URL] push [--dir D] [--project P] [--static]
+
+Check the folder is a Vite React TS app unless --static, pack dist/ (index.html
+required) as a raw gzipped tar, and upload it. Prints the preview
+URL plus file and byte counts.
+
+Options:
+  -dir string
+    	project folder (default ".")
+  -project string
+    	project name (default: yodea.json, then folder name)
+  -static
+    	publish prepared dist/ without React TypeScript validation

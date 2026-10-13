@@ -131,7 +131,7 @@ func ReadProject(dir, flag string) (string, error) {
 	if !os.IsNotExist(err) {
 		return "", fmt.Errorf("bad config %s: %w", ConfigFile, err)
 	}
-	// Resolve via absolute path (mirroring cmdInit) so dir="." infers the
+	// Resolve via absolute path (as yodea init does) so dir="." infers the
 	// current folder name instead of the literal ".".
 	abs, err := filepath.Abs(dir)
 	if err != nil {
