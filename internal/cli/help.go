@@ -14,7 +14,7 @@ func (a *app) help(args []string) error {
 		return nil
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("usage: yodea help [command] (takes at most one topic, got %d)", len(args))
+		return &usageError{fmt.Sprintf("usage: yodea help [command] (takes at most one topic, got %d)", len(args))}
 	}
 	c := lookup(args[0])
 	if c == nil {

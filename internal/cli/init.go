@@ -36,11 +36,11 @@ func (o *initOptions) setFlags(fs *flag.FlagSet, _ func(string) string) {
 func (o *initOptions) parseArgs(c *command, args []string) error {
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
-			return fmt.Errorf("flag %q must come before the project name; usage: %s", arg, c.usage())
+			return &usageError{fmt.Sprintf("flag %q must come before the project name; usage: %s", arg, c.usage())}
 		}
 	}
 	if len(args) > 1 {
-		return fmt.Errorf("init takes at most one project name (got %d); put flags before the project name; usage: %s", len(args), c.usage())
+		return &usageError{fmt.Sprintf("init takes at most one project name (got %d); put flags before the project name; usage: %s", len(args), c.usage())}
 	}
 	if len(args) == 1 {
 		o.project = args[0]

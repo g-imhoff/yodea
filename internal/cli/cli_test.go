@@ -55,11 +55,14 @@ func TestMainExitStatus(t *testing.T) {
 		wantStdout string // prefix
 		wantStderr string
 	}{
-		{nil, 1, "", "yodea: usage: yodea [--server URL] <login|init|push|list|delete> [options]\n"},
+		{nil, 2, "", "yodea: usage: yodea [--server URL] <login|init|push|list|delete> [options]\n"},
 		{[]string{"help"}, 0, "yodea [--server URL] <command> [options]\n", ""},
 		{[]string{"bogus"}, 1, "", "yodea: unknown command \"bogus\" (want login, init, push, list, or delete)\n"},
 		{[]string{"help", "bogus"}, 1, "", "yodea: unknown command \"bogus\" (want login, init, push, list, or delete)\n"},
-		{[]string{"--server"}, 1, "", "yodea: usage: yodea --server URL <command> [options]\n"},
+		{[]string{"--server"}, 2, "", "yodea: usage: yodea --server URL <command> [options]\n"},
+		// A bad flag prints the flag error plus the command help once, on
+		// stderr, and Main adds no "yodea:" line of its own.
+		{[]string{"push", "--bad-flag"}, 2, "", "flag provided but not defined: -bad-flag\n" + golden(t, "push")},
 		// The flag package prints this help on stderr, and Main adds nothing.
 		{[]string{"list", "--h"}, 0, "", golden(t, "list")},
 	}
