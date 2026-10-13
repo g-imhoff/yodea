@@ -52,13 +52,13 @@ func TestSupabaseStoreRequiresServiceKey(t *testing.T) {
 
 func TestNormalizeHost(t *testing.T) {
 	for in, want := range map[string]string{
-		"example.com":          "example.com",
-		"Example.COM":          "example.com",
-		"  example.com  ":      "example.com",
-		"example.com:443":      "example.com",
-		"127.0.0.1:8093":       "127.0.0.1",
-		"[::1]:8093":           "::1",
-		"[::1]":                "::1",
+		"example.com":               "example.com",
+		"Example.COM":               "example.com",
+		"  example.com  ":           "example.com",
+		"example.com:443":           "example.com",
+		"127.0.0.1:8093":            "127.0.0.1",
+		"[::1]:8093":                "::1",
+		"[::1]":                     "::1",
 		"lbl.previews.example.test": "lbl.previews.example.test",
 		"LBL.PREVIEWS.EXAMPLE.TEST": "lbl.previews.example.test",
 	} {

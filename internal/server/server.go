@@ -54,7 +54,7 @@ import (
 // block after 30 consecutive rejections. Idle buckets expire after
 // caddyAskIdleTTL via lazy sweep (no goroutine, stdlib only).
 const (
-	caddyAskRefillPerSec   = 5.0
+	caddyAskRefillPerSec    = 5.0
 	caddyAskBurst           = 10
 	caddyAskMaxRejections   = 30
 	caddyAskBlockDuration   = time.Minute
@@ -73,9 +73,9 @@ type askBucket struct {
 // caddyAskLimiter is a per-IP token bucket with block-on-abuse. Guarded
 // by its own mutex; stdlib only (sync.Mutex + map + time).
 type caddyAskLimiter struct {
-	mu         sync.Mutex
-	buckets    map[string]*askBucket
-	lastSweep  time.Time
+	mu        sync.Mutex
+	buckets   map[string]*askBucket
+	lastSweep time.Time
 }
 
 func newCaddyAskLimiter() *caddyAskLimiter {
