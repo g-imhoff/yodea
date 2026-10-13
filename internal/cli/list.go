@@ -8,9 +8,7 @@ var listCmd = &command{
 	usesServer: true,
 	long: "List your personal sites (GET /api/sites): one quoted row per\n" +
 		"project with its label and file count.",
-	summary: []string{
-		"list                           list your personal sites (GET /api/sites)",
-	},
+	short: "list your personal sites (GET /api/sites)",
 	newOptions: func() options { return &listOptions{} },
 }
 

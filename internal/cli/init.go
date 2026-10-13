@@ -16,11 +16,7 @@ var initCmd = &command{
 		"Linking writes only yodea.json there; scaffolding never overwrites\n" +
 		"existing files. Without a project name the folder base name wins.\n" +
 		"Flags must come before the project name.",
-	summary: []string{
-		"init [--dir D] [--force] [--link] [project]",
-		"    scaffold a fresh Vite React TS app, or link an existing folder",
-		"    (writes only yodea.json there; never overwrites user files)",
-	},
+	short: "scaffold a fresh Vite React TS app, or link an existing folder (writes only yodea.json there; never overwrites user files)",
 	newOptions: func() options { return &initOptions{} },
 }
 

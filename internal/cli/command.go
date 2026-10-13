@@ -19,10 +19,9 @@ type command struct {
 	// shows the global [--server URL].
 	usesServer bool
 	long       string // what the command does, printed under the usage line
-	// summary is the command's entry in the overview, one string per
-	// line, aligned by hand. The first line starts with synopsis, which
-	// TestOverviewShowsSynopsis checks.
-	summary []string
+	// short is the command's one-line entry in the overview. The overview
+	// is generated from synopsis and short, so the two cannot drift apart.
+	short string
 	// newOptions returns empty options for one run of the command.
 	newOptions func() options
 }

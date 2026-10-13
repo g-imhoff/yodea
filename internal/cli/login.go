@@ -17,10 +17,7 @@ var loginCmd = &command{
 	usesServer: true,
 	long: "Log in via POST /api/session and save the session (0600 file).\n" +
 		"The password never comes from argv: set $YODEA_PASSWORD or type it at the hidden prompt.",
-	summary: []string{
-		"login --email E            log in via POST /api/session (session saved 0600;",
-		"                           password from $YODEA_PASSWORD or a hidden prompt)",
-	},
+	short: "log in via POST /api/session (session saved 0600; password from $YODEA_PASSWORD or a hidden prompt)",
 	newOptions: func() options { return &loginOptions{} },
 }
 
