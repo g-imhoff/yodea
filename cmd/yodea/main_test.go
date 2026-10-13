@@ -154,15 +154,24 @@ func TestLoginRejectsPositional(t *testing.T) {
 func captureStdout(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	old := os.Stdout
+	defer func() { os.Stdout = old }()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	os.Stdout = w
 	fnErr := fn()
-	_ = w.Close()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	os.Stdout = old
-	out, _ := io.ReadAll(r)
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
 	return string(out), fnErr
 }
 
@@ -302,6 +311,66 @@ func TestLoginQuotesHostileIdentity(t *testing.T) {
 	}
 }
 
+func TestSubcommandHelpExitsZero(t *testing.T) {
+	isolateSession(t)
+	cases := []struct {
+		name string
+		args []string
+		call func() error
+		want string
+	}{
+		{"login", []string{"--help"}, func() error { return cmdLogin("", []string{"--help"}) }, "yodea [--server URL] login --email E"},
+		{"login-h", []string{"-h"}, func() error { return cmdLogin("", []string{"-h"}) }, "yodea [--server URL] login --email E"},
+		{"init", []string{"--help"}, func() error { return cmdInit([]string{"--help"}) }, "yodea init [--dir D] [--force] [--link] [project]"},
+		{"push", []string{"--help"}, func() error { return cmdPush("", false, []string{"--help"}) }, "yodea [--server URL] push [--dir D] [--project P]"},
+		{"list", []string{"--help"}, func() error { return cmdList("", false, []string{"--help"}) }, "yodea [--server URL] list"},
+		{"delete", []string{"--help"}, func() error { return cmdDelete("", false, []string{"--help"}) }, "yodea [--server URL] delete <project>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := captureStdout(t, tc.call)
+			if err != nil {
+				t.Fatalf("%s %s returned error: %v", tc.name, tc.args, err)
+			}
+			if !strings.Contains(out, "usage: "+tc.want) {
+				t.Fatalf("%s %v should print %q, got %q", tc.name, tc.args, "usage: "+tc.want, out)
+			}
+		})
+	}
+}
+
+func TestRunServerFlagHelpExitsZero(t *testing.T) {
+	isolateSession(t)
+	for _, cmd := range []string{"login", "init", "push", "list", "delete"} {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			out, err := captureStdout(t, func() error {
+				return run([]string{"--server", "http://127.0.0.1:8093", cmd, "--help"})
+			})
+			if err != nil {
+				t.Fatalf("run --server URL %s --help returned error: %v", cmd, err)
+			}
+			if !strings.Contains(out, "usage:") {
+				t.Fatalf("run --server URL %s --help should print usage, got %q", cmd, out)
+			}
+		})
+	}
+}
+
+func TestHelpTopicShowsCommandHelp(t *testing.T) {
+	out, err := captureStdout(t, func() error { return run([]string{"help", "push"}) })
+	if err != nil {
+		t.Fatalf("help push returned error: %v", err)
+	}
+	if !strings.Contains(out, "usage: yodea [--server URL] push") {
+		t.Fatalf("help push should print push usage, got %q", out)
+	}
+	if err := run([]string{"help", "bogus"}); err == nil {
+		t.Fatal("expected help with unknown command to fail, got nil")
+	} else if !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("want unknown-command error, got %v", err)
+	}
+}
 func TestInitQuotesHostileDir(t *testing.T) {
 	hostileDir := filepath.Join(t.TempDir(), "evil\tdir\ninject")
 	out, err := captureStdout(t, func() error { return cmdInit([]string{"--dir", hostileDir, "demo"}) })
