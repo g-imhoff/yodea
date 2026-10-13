@@ -184,21 +184,6 @@ func captureStdout(t *testing.T, fn func() error) (string, error) {
 	return string(out), fnErr
 }
 
-func captureStderr(t *testing.T, fn func() error) (string, error) {
-	t.Helper()
-	old := os.Stderr
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stderr = w
-	fnErr := fn()
-	_ = w.Close()
-	os.Stderr = old
-	out, _ := io.ReadAll(r)
-	return string(out), fnErr
-}
-
 func TestListQuotesNames(t *testing.T) {
 	isolateSession(t)
 	t.Setenv("YODEA_SERVER", "")
@@ -346,7 +331,7 @@ func TestSubcommandHelpExitsZero(t *testing.T) {
 		{"login", []string{"--help"}, func() error { return cmdLogin("", []string{"--help"}) }, "yodea [--server URL] login --email E"},
 		{"login-h", []string{"-h"}, func() error { return cmdLogin("", []string{"-h"}) }, "yodea [--server URL] login --email E"},
 		{"init", []string{"--help"}, func() error { return cmdInit([]string{"--help"}) }, "yodea init [--dir D] [--force] [--link] [project]"},
-		{"push", []string{"--help"}, func() error { return cmdPush("", false, []string{"--help"}) }, "yodea [--server URL] push [--dir D] [--project P]"},
+		{"push", []string{"--help"}, func() error { return cmdPush("", false, []string{"--help"}) }, "yodea [--server URL] push [--dir D] [--project P] [--static]"},
 		{"list", []string{"--help"}, func() error { return cmdList("", false, []string{"--help"}) }, "yodea [--server URL] list"},
 		{"delete", []string{"--help"}, func() error { return cmdDelete("", false, []string{"--help"}) }, "yodea [--server URL] delete <project>"},
 	}
@@ -497,11 +482,11 @@ func TestUsageDescribesStaticPush(t *testing.T) {
 }
 
 func TestPushFlagHelpDescribesStaticMode(t *testing.T) {
-	out, err := captureStderr(t, func() error {
+	out, err := captureStdout(t, func() error {
 		return cmdPush("http://127.0.0.1:8093", true, []string{"--help"})
 	})
-	if err == nil {
-		t.Fatal("push --help returned nil, want flag help error")
+	if err != nil {
+		t.Fatalf("push --help returned error: %v", err)
 	}
 	for _, want := range []string{"-static", "prepared dist/", "without React TypeScript validation"} {
 		if !strings.Contains(out, want) {
