@@ -35,13 +35,13 @@ func TestClientServerIntegrationLoginPushListPreviewDelete(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL, "")
-	if err := c.Login("alice@example.com", "x"); err != nil {
+	if err := c.Login("alice@example.com", "x", os.Getenv); err != nil {
 		t.Fatalf("login: %v", err)
 	}
 	if c.Token == "" {
 		t.Fatal("login left empty token")
 	}
-	sess, err := LoadSession()
+	sess, err := LoadSession(os.Getenv)
 	if err != nil {
 		t.Fatalf("load saved session: %v", err)
 	}

@@ -17,9 +17,11 @@ type Session struct {
 	UserID string `json:"user_id"`
 }
 
-// SessionPath reports where the session file lives.
-func SessionPath() (string, error) {
-	if v := os.Getenv("YODEA_SESSION_FILE"); v != "" {
+// SessionPath reports where the session file lives. getenv reads the
+// environment so tests inject YODEA_SESSION_FILE without touching the
+// process environment.
+func SessionPath(getenv func(string) string) (string, error) {
+	if v := getenv("YODEA_SESSION_FILE"); v != "" {
 		return v, nil
 	}
 	dir, err := os.UserConfigDir()
@@ -30,8 +32,8 @@ func SessionPath() (string, error) {
 }
 
 // SaveSession writes the session with 0600 permissions.
-func SaveSession(s Session) error {
-	path, err := SessionPath()
+func SaveSession(s Session, getenv func(string) string) error {
+	path, err := SessionPath(getenv)
 	if err != nil {
 		return err
 	}
@@ -51,8 +53,8 @@ func SaveSession(s Session) error {
 }
 
 // LoadSession reads the persisted session, or an actionable login error.
-func LoadSession() (Session, error) {
-	path, err := SessionPath()
+func LoadSession(getenv func(string) string) (Session, error) {
+	path, err := SessionPath(getenv)
 	if err != nil {
 		return Session{}, err
 	}

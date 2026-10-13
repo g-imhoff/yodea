@@ -3,6 +3,7 @@
 package client
 
 import (
+	"os"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -12,7 +13,7 @@ import (
 // the session file must carry a present, inheritance-protected DACL.
 func TestRestrictSessionFileOwnerOnlyDACL(t *testing.T) {
 	p := isolateSession(t)
-	if err := SaveSession(Session{Server: "http://127.0.0.1:8093", Token: "tok-win", UserID: "u1"}); err != nil {
+	if err := SaveSession(Session{Server: "http://127.0.0.1:8093", Token: "tok-win", UserID: "u1"}, os.Getenv); err != nil {
 		t.Fatal(err)
 	}
 	sd, err := windows.GetNamedSecurityInfo(p, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
@@ -40,7 +41,7 @@ func TestRestrictSessionFileOwnerOnlyDACL(t *testing.T) {
 		t.Fatal("session file DACL has no ACEs")
 	}
 	// The lockdown must not lock out the owner.
-	got, err := LoadSession()
+	got, err := LoadSession(os.Getenv)
 	if err != nil {
 		t.Fatalf("session unreadable after ACL lockdown: %v", err)
 	}

@@ -115,7 +115,7 @@ func TestSessionSitesPreserveCodes(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":"invalid email or password","code":"invalid_credentials"}`))
 	}))
 	defer loginsrv.Close()
-	err := New(loginsrv.URL, "").Login("a@b.c", "wrong")
+	err := New(loginsrv.URL, "").Login("a@b.c", "wrong", os.Getenv)
 	if err == nil || CodeOf(err) != "invalid_credentials" {
 		t.Fatalf("login code = %q, want invalid_credentials (%v)", CodeOf(err), err)
 	}

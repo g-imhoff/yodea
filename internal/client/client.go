@@ -17,7 +17,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -34,37 +33,22 @@ const DefaultDevServer = "http://127.0.0.1:8093"
 // MaxUploadBytes reuses the server cap: deploys over 30MB are rejected.
 const MaxUploadBytes = sites.MaxUploadBytes
 
-// ResolveServer picks the API base URL: explicit flag first, then
-// YODEA_SERVER, then the dev default when YODEA_DEV=1, else production.
-func ResolveServer(flag string) string {
-	if strings.TrimSpace(flag) != "" {
+// ResolveServer picks the API base URL: an explicit --server flag first,
+// then YODEA_SERVER, then the dev default when YODEA_DEV=1, then the saved
+// session server (only when no flag and no env override), else production.
+// getenv reads the environment so tests inject values without touching
+// the process environment.
+func ResolveServer(flag string, flagSet bool, sessServer string, getenv func(string) string) string {
+	if flagSet && strings.TrimSpace(flag) != "" {
 		return strings.TrimSuffix(strings.TrimSpace(flag), "/")
 	}
-	if v := strings.TrimSpace(os.Getenv("YODEA_SERVER")); v != "" {
+	if v := strings.TrimSpace(getenv("YODEA_SERVER")); v != "" {
 		return strings.TrimSuffix(v, "/")
 	}
-	if os.Getenv("YODEA_DEV") == "1" {
+	if getenv("YODEA_DEV") == "1" {
 		return DefaultDevServer
 	}
-	return DefaultProdServer
-}
-
-// EffectiveServer resolves the server for an authenticated command given
-// whether --server was explicitly passed plus the saved session server.
-// An explicit flag always wins. Otherwise YODEA_SERVER, then the YODEA_DEV
-// default, then the saved session server (only when no flag and no env
-// override), else production.
-func EffectiveServer(flag string, flagSet bool, sessServer string) string {
-	if flagSet {
-		return ResolveServer(flag)
-	}
-	if v := strings.TrimSpace(os.Getenv("YODEA_SERVER")); v != "" {
-		return strings.TrimSuffix(v, "/")
-	}
-	if os.Getenv("YODEA_DEV") == "1" {
-		return DefaultDevServer
-	}
-	if strings.TrimSpace(sessServer) != "" {
+	if !flagSet && strings.TrimSpace(sessServer) != "" {
 		return strings.TrimSuffix(strings.TrimSpace(sessServer), "/")
 	}
 	return DefaultProdServer
@@ -171,7 +155,7 @@ func readBody(resp *http.Response) []byte {
 // Login exchanges email plus password against POST /api/session and
 // persists the session locally (0600 file). The session token arrives as
 // the yodea_session Set-Cookie value; the JSON body carries only metadata.
-func (c *Client) Login(email, password string) error {
+func (c *Client) Login(email, password string, getenv func(string) string) error {
 	payload, _ := json.Marshal(map[string]string{"email": email, "password": password})
 	req, err := http.NewRequest(http.MethodPost, c.Server+"/api/session", bytes.NewReader(payload))
 	if err != nil {
@@ -200,7 +184,7 @@ func (c *Client) Login(email, password string) error {
 	}
 	_ = json.Unmarshal(body, &v)
 	c.Token = token
-	return SaveSession(Session{Server: c.Server, Token: token, UserID: v.UserID})
+	return SaveSession(Session{Server: c.Server, Token: token, UserID: v.UserID}, getenv)
 }
 
 // Site mirrors the server's site record for `yodea list`.

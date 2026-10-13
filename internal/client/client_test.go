@@ -42,39 +42,50 @@ func writeMinimalReactTS(t *testing.T, dir string) {
 }
 
 func TestResolveServerDevDefault(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "1")
-	if got := ResolveServer(""); got != "http://127.0.0.1:8093" {
+	t.Parallel()
+	getenv := func(key string) string {
+		if key == "YODEA_DEV" {
+			return "1"
+		}
+		return ""
+	}
+	if got := ResolveServer("", false, "", getenv); got != "http://127.0.0.1:8093" {
 		t.Fatalf("dev default = %q, want localhost:8093", got)
 	}
 }
 
-func TestEffectiveServerExplicitFlagWins(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
-	if got := EffectiveServer("http://flag.example", true, "http://saved.example"); got != "http://flag.example" {
+func TestResolveServerExplicitFlagWins(t *testing.T) {
+	t.Parallel()
+	getenv := func(string) string { return "" }
+	if got := ResolveServer("http://flag.example", true, "http://saved.example", getenv); got != "http://flag.example" {
 		t.Fatalf("explicit flag lost: got %q want flag", got)
 	}
 }
 
-func TestEffectiveServerFallsBackToSessionOnlyWithoutFlagOrEnv(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
-	if got := EffectiveServer("", false, "http://saved.example"); got != "http://saved.example" {
+func TestResolveServerFallsBackToSessionOnlyWithoutFlagOrEnv(t *testing.T) {
+	t.Parallel()
+	getenv := func(string) string { return "" }
+	if got := ResolveServer("", false, "http://saved.example", getenv); got != "http://saved.example" {
 		t.Fatalf("want saved session server, got %q", got)
 	}
 	// Env overrides session.
-	t.Setenv("YODEA_SERVER", "http://env.example")
-	if got := EffectiveServer("", false, "http://saved.example"); got != "http://env.example" {
+	envGetenv := func(key string) string {
+		if key == "YODEA_SERVER" {
+			return "http://env.example"
+		}
+		return ""
+	}
+	if got := ResolveServer("", false, "http://saved.example", envGetenv); got != "http://env.example" {
 		t.Fatalf("want env server, got %q", got)
 	}
 	// Dev default overrides session.
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "1")
-	if got := EffectiveServer("", false, "http://saved.example"); got != DefaultDevServer {
+	devGetenv := func(key string) string {
+		if key == "YODEA_DEV" {
+			return "1"
+		}
+		return ""
+	}
+	if got := ResolveServer("", false, "http://saved.example", devGetenv); got != DefaultDevServer {
 		t.Fatalf("want dev server, got %q", got)
 	}
 }
@@ -91,7 +102,7 @@ func TestLoginBadAuthFailsCleanly(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := New(srv.URL, "")
-	if err := c.Login("nobody@example.com", "wrong"); err == nil {
+	if err := c.Login("nobody@example.com", "wrong", os.Getenv); err == nil {
 		t.Fatal("expected login error for bad credentials, got nil")
 	}
 }
@@ -99,7 +110,7 @@ func TestLoginBadAuthFailsCleanly(t *testing.T) {
 func TestSessionRoundTrip0600(t *testing.T) {
 	p := isolateSession(t)
 	want := Session{Server: "http://127.0.0.1:8093", Token: "tok123", UserID: "u1"}
-	if err := SaveSession(want); err != nil {
+	if err := SaveSession(want, os.Getenv); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(p)
@@ -109,7 +120,7 @@ func TestSessionRoundTrip0600(t *testing.T) {
 	if fi.Mode().Perm() != 0o600 {
 		t.Fatalf("session mode = %o, want 600", fi.Mode().Perm())
 	}
-	got, err := LoadSession()
+	got, err := LoadSession(os.Getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +143,7 @@ func TestSessionCorruptRejected(t *testing.T) {
 			if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := LoadSession(); err == nil {
+			if _, err := LoadSession(os.Getenv); err == nil {
 				t.Fatalf("expected corrupt session error for %q, got nil", name)
 			}
 		})

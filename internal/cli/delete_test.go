@@ -10,7 +10,7 @@ import (
 )
 
 func TestDeleteRejectsExtraPositionals(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
 	_, _, err := runCLI(t, nil, "--server", "http://127.0.0.1:8093", "delete", "my", "app")
 	if err == nil {
 		t.Fatal("expected delete with two projects to fail, got nil")
@@ -28,9 +28,8 @@ func TestDeleteRejectsExtraPositionals(t *testing.T) {
 }
 
 func TestDeleteQuotesName(t *testing.T) {
-	isolateSession(t)
-	t.Setenv("YODEA_SERVER", "")
-	t.Setenv("YODEA_DEV", "")
+	t.Parallel()
+	env, getenv := testEnv(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			w.WriteHeader(http.StatusNotFound)
@@ -39,10 +38,10 @@ func TestDeleteQuotesName(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
-	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}); err != nil {
+	if err := client.SaveSession(client.Session{Server: srv.URL, Token: "tok", UserID: "u"}, getenv); err != nil {
 		t.Fatal(err)
 	}
-	out, _, err := runCLI(t, nil, "--server", srv.URL, "delete", "myapp")
+	out, _, err := runCLI(t, env, "--server", srv.URL, "delete", "myapp")
 	if err != nil {
 		t.Fatal(err)
 	}

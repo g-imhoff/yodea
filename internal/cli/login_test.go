@@ -11,7 +11,7 @@ import (
 )
 
 func TestLoginRejectsPasswordFlag(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
 	env := map[string]string{"YODEA_PASSWORD": "env-secret"}
 	_, _, err := runCLI(t, env, "--server", "http://127.0.0.1:8093", "login", "--email", "a@b.c", "--password", "argv-secret")
 	if err == nil {
@@ -23,7 +23,7 @@ func TestLoginRejectsPasswordFlag(t *testing.T) {
 }
 
 func TestLoginRejectsPositional(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
 	env := map[string]string{"YODEA_EMAIL": "a@b.c", "YODEA_PASSWORD": "env-secret"}
 	_, _, err := runCLI(t, env, "--server", "http://127.0.0.1:8093", "login", "extra")
 	if err == nil {
@@ -35,7 +35,9 @@ func TestLoginRejectsPositional(t *testing.T) {
 }
 
 func TestLoginQuotesHostileIdentity(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
+	env, _ := testEnv(t)
+	env["YODEA_PASSWORD"] = "secret"
 	hostileWho := "evil\tuser\ninject"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.SetCookie(w, &http.Cookie{Name: "yodea_session", Value: "tok"})
@@ -43,7 +45,6 @@ func TestLoginQuotesHostileIdentity(t *testing.T) {
 		fmt.Fprintf(w, `{"user_id":%q}`, hostileWho)
 	}))
 	defer srv.Close()
-	env := map[string]string{"YODEA_PASSWORD": "secret"}
 	out, _, err := runCLI(t, env, "--server", srv.URL, "login", "--email", "a@b.c")
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestLoginQuotesHostileIdentity(t *testing.T) {
 }
 
 func TestLoginPromptNeedsTerminal(t *testing.T) {
-	isolateSession(t)
+	t.Parallel()
 	devNull, err := os.Open(os.DevNull)
 	if err != nil {
 		t.Fatal(err)

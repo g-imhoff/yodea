@@ -51,11 +51,11 @@ func (o *loginOptions) run(a *app) error {
 			return fmt.Errorf("login needs a password (set $YODEA_PASSWORD or type it at the prompt)")
 		}
 	}
-	server := a.serverURL()
-	if err := client.New(server, "").Login(o.email, password); err != nil {
+	server := client.ResolveServer(a.global.server, a.global.serverSet, "", a.getenv)
+	if err := client.New(server, "").Login(o.email, password, a.getenv); err != nil {
 		return err
 	}
-	sess, err := client.LoadSession()
+	sess, err := client.LoadSession(a.getenv)
 	if err != nil {
 		return err
 	}
