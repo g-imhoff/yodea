@@ -53,7 +53,7 @@ yodead --dev --addr 127.0.0.1:8093 --data-dir ./data --domain previews.example.t
 
 `--dev` uses synthetic per-viewer tokens and the local file store; never use
 it in production. Production uses `YODEA_STORE=supabase` with `SUPABASE_URL`
-plus a server-side key, schema in `supabase/migrations/0001_yodea_mvp.sql`.
+plus a server-side key, schema in `supabase/migrations/` (apply every file in order).
 
 ## Layout
 
