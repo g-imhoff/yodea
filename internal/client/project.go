@@ -82,7 +82,7 @@ haveViteConfig:
 		if err != nil || foundTsx {
 			return nil
 		}
-		if d.IsDir() && (d.Name() == "node_modules" || d.Name() == "dist" || strings.HasPrefix(d.Name(), ".")) {
+		if d.IsDir() && filepath.Clean(path) != filepath.Clean(dir) && (d.Name() == "node_modules" || d.Name() == "dist" || strings.HasPrefix(d.Name(), ".")) {
 			return filepath.SkipDir
 		}
 		if !d.IsDir() && strings.HasSuffix(d.Name(), ".tsx") {
