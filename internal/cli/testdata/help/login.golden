@@ -1,0 +1,8 @@
+usage: yodea [--server URL] login --email E
+
+Log in via POST /api/session and save the session (0600 file).
+The password never comes from argv: set $YODEA_PASSWORD or type it at the hidden prompt.
+
+Options:
+  -email string
+    	login email ($YODEA_EMAIL)

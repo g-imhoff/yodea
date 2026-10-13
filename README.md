@@ -57,8 +57,9 @@ plus a server-side key, schema in `supabase/migrations/0001_yodea_mvp.sql`.
 
 ## Layout
 
-- `cmd/yodea` — the CLI (`login init push list delete`)
+- `cmd/yodea` — the CLI entry point
 - `cmd/yodead` — the server
+- `internal/cli` — the CLI commands (`login init push list delete`), one file each, plus help
 - `internal/server` — HTTP backend (dashboard, previews, views, favorites)
 - `internal/client` — CLI backend (session, deploy packing, React TS checks)
 - `internal/sites` — archive validation and preview labels

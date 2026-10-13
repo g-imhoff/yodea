@@ -1,0 +1,14 @@
+usage: yodea init [--dir D] [--force] [--link] [project]
+
+Scaffold a fresh Vite React TS app, or link an existing folder as-is.
+Linking writes only yodea.json there; scaffolding never overwrites
+existing files. Without a project name the folder base name wins.
+Flags must come before the project name.
+
+Options:
+  -dir string
+    	target folder (default ".")
+  -force
+    	allow a non-empty dir (existing files are still never overwritten)
+  -link
+    	link this folder as-is instead of scaffolding
