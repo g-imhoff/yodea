@@ -265,6 +265,33 @@ func TestPushFastFailsNonReactTS(t *testing.T) {
 	}
 }
 
+func TestValidateReactTSDotRoot(t *testing.T) {
+	isolateSession(t)
+	dir := t.TempDir()
+	pkg := `{"dependencies":{"react":"^18","react-dom":"^18"},"devDependencies":{"vite":"^5"}}`
+	for path, body := range map[string]string{
+		"package.json":    pkg,
+		"vite.config.ts":  `export default {}`,
+		"tsconfig.json":   `{}`,
+		"src/App.tsx":     `export default function App() { return null }`,
+		"dist/index.html": `<h1>hi</h1>`,
+	} {
+		full := filepath.Join(dir, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Chdir(dir)
+	for _, root := range []string{".", "./"} {
+		if err := ValidateReactTS(root); err != nil {
+			t.Fatalf("ValidateReactTS(%q) in a valid app = %v, want nil", root, err)
+		}
+	}
+}
+
 func TestReadProjectRejectsCorruptConfig(t *testing.T) {
 	isolateSession(t)
 	cases := map[string]string{
