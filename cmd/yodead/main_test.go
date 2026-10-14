@@ -4,8 +4,10 @@ import (
 	"context"
 	"io"
 	"log"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -73,14 +75,16 @@ func expectStart(t *testing.T, env map[string]string, args []string) string {
 	case <-time.After(15 * time.Second):
 		t.Fatalf("run %v env %v never listened:\n%s", args, env, logs)
 	}
-	cancel()
+	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("run after cancel = %v, want clean exit\n%s", err, logs)
+			t.Fatalf("run after SIGTERM = %v, want clean exit\n%s", err, logs)
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatalf("run did not return after cancel\n%s", logs)
+		t.Fatalf("run did not return after SIGTERM\n%s", logs)
 	}
 	return logs.String()
 }

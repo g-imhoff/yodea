@@ -60,7 +60,7 @@ plus a server-side key, schema in `supabase/migrations/` (apply every file in or
 - `cmd/yodea` — the CLI entry point
 - `cmd/yodead` — the server
 - `internal/cli` — the CLI commands (`login init push list delete`), one file each, plus help
-- `internal/server` — HTTP backend (dashboard, previews, views, favorites)
+- `internal/server` — HTTP backend (dashboard, previews, views, favorites, presets)
 - `internal/client` — CLI backend (session, deploy packing, React TS checks)
 - `internal/sites` — archive validation and preview labels
 - `internal/store` — local file store plus Supabase PostgREST store

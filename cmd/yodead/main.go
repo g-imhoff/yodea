@@ -1,5 +1,6 @@
 // Command yodead is the yodea backend: central dashboard plus login,
-// session API, site deploys, preview subdomains, views, and favorites.
+// session API, site deploys, preview subdomains, views, favorites, and
+// presets.
 //
 // Configuration precedence is flag > env > default: every --flag defaults
 // from its YODEA_* env var and falls back to a built-in default.
@@ -11,6 +12,9 @@
 //	SUPABASE_SERVICE_KEY server-side key, only for YODEA_STORE=supabase
 //	YODEA_STORE          "local" (default file store) or "supabase"
 //	YODEA_DEV / --dev    DevNoAuth: per-viewer synthetic tokens, no network
+//	YODEA_ALLOW_INSECURE_DEV_PUBLIC / --allow-insecure-dev-public
+//	                     "1" lets --dev start on a public domain or non-loopback
+//	                     bind (forgeable tokens, legacy deployments only)
 //	YODEA_SECURE_COOKIES "1" forces Secure cookies, "0" disables; default is !dev
 //	PORT / YODEA_ADDR   listen address (default 127.0.0.1:8093)
 //

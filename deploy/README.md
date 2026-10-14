@@ -65,8 +65,12 @@ docker run -d --name yodead \
 
 A dev container instead bind-mounts a host-built binary read-only
 (`<host-binary>:/yodead:ro`) and a host DataDir (`<host-data>:/data`) on the
-same base image with the same flags plus `--dev`. `--dev` selects synthetic
+same base image with the same flags plus `--dev --allow-insecure-dev-public`
+(or `YODEA_ALLOW_INSECURE_DEV_PUBLIC=1`). `--dev` selects synthetic
 per-viewer tokens and the local file store; never use it in production.
+On its own, `--dev` refuses a non-loopback bind or a public domain. The
+escape hatch lifts that check for legacy dev deployments only: anyone who
+can reach the server can then forge dev tokens.
 Production adds the Supabase env (`YODEA_STORE=supabase`, `SUPABASE_URL` plus
 a server-side key); secrets come from env only, never flags.
 
@@ -92,7 +96,7 @@ TLS handshake for a preview hostname, calls
 `GET http://yodead:8093/api/caddy-ask?domain=<host>` over the container
 network. `yodead` answers `200` only when the host is
 `<label>.previews.example.com` with an existing site for `<label>`
-(`handleCaddyAsk` in `internal/server/server.go`); anything else gets `404`
+(`handleCaddyAsk` in `internal/server/caddy_ask.go`); anything else gets `404`
 and no certificate is issued. So each preview gets its own certificate on
 first visit, and only live previews can get one.
 

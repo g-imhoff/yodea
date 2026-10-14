@@ -87,18 +87,6 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	s.handlePreview(w, r, label)
 }
 
-func (s *Server) previewLabel(hostport string) (string, bool) {
-	host, ok := normalizeHost(hostport)
-	if !ok {
-		return "", false
-	}
-	label, ok := strings.CutSuffix(host, "."+s.cfg.BaseDomain)
-	if !ok || label == "" || strings.Contains(label, ".") {
-		return "", false
-	}
-	return label, true
-}
-
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	host, ok := normalizeHost(r.Host)
 	if !ok || host != s.cfg.BaseDomain {

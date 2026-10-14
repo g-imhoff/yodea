@@ -70,6 +70,18 @@ func normalizeHost(hostport string) (string, bool) {
 	}
 }
 
+func (s *Server) previewLabel(hostport string) (string, bool) {
+	host, ok := normalizeHost(hostport)
+	if !ok {
+		return "", false
+	}
+	label, ok := strings.CutSuffix(host, "."+s.cfg.BaseDomain)
+	if !ok || label == "" || strings.Contains(label, ".") {
+		return "", false
+	}
+	return label, true
+}
+
 func (s *Server) requireCentralHost(w http.ResponseWriter, r *http.Request) bool {
 	if host, ok := normalizeHost(r.Host); !ok || host != s.cfg.BaseDomain {
 		writeErr(w, "not_found", "not found")
