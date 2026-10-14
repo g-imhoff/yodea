@@ -51,7 +51,10 @@ func (s *Server) checkReady() error {
 	return nil
 }
 
-func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	writeJSON(w, http.StatusOK, auth.PublicConfig{
 		SupabaseURL: s.cfg.SupabaseURL,
 		AnonKey:     s.cfg.AnonKey,

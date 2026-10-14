@@ -15,6 +15,9 @@ deploys into it):
   db.json            # local metadata store: sites, per-viewer views, favorites
   db.json.bak        # previous good copy, rotated before each save; fallback when primary is missing, empty, or corrupt
   db.json.tmp        # transient, during atomic save-rename only
+  presets.json       # local metadata store: per-viewer saved presets per preview
+  presets.json.bak   # previous good copy, same rotation and fallback rules as db.json.bak
+  presets.json.tmp   # transient, during atomic save-rename only
   yodead.lock        # single-writer flock file (FD held for the Store lifetime, PID inside)
   sites/
     <label>/         # one dir per preview label, static dist files
@@ -35,7 +38,7 @@ it live via `ReplaceSite`; the previous live dir moves aside to a unique
 `sites/.old-*` backup between the two renames. `server.New` calls
 `sites.CleanupLeftovers` on startup to remove crashed `.stage-*` and `.old-*`
 leftovers (only dot-prefixed staging/backup names, never the live dest).
-Only the local store uses `db.json`; with
+Only the local store uses `db.json` and `presets.json`; with
 `YODEA_STORE=supabase` metadata lives in PostgREST and the DataDir still
 holds `sites/<label>/`.
 
@@ -62,8 +65,12 @@ docker run -d --name yodead \
 
 A dev container instead bind-mounts a host-built binary read-only
 (`<host-binary>:/yodead:ro`) and a host DataDir (`<host-data>:/data`) on the
-same base image with the same flags plus `--dev`. `--dev` selects synthetic
+same base image with the same flags plus `--dev --allow-insecure-dev-public`
+(or `YODEA_ALLOW_INSECURE_DEV_PUBLIC=1`). `--dev` selects synthetic
 per-viewer tokens and the local file store; never use it in production.
+On its own, `--dev` refuses a non-loopback bind or a public domain. The
+escape hatch lifts that check for legacy dev deployments only: anyone who
+can reach the server can then forge dev tokens.
 Production adds the Supabase env (`YODEA_STORE=supabase`, `SUPABASE_URL` plus
 a server-side key); secrets come from env only, never flags.
 
@@ -89,19 +96,20 @@ TLS handshake for a preview hostname, calls
 `GET http://yodead:8093/api/caddy-ask?domain=<host>` over the container
 network. `yodead` answers `200` only when the host is
 `<label>.previews.example.com` with an existing site for `<label>`
-(`handleCaddyAsk` in `internal/server/server.go`); anything else gets `404`
+(`handleCaddyAsk` in `internal/server/caddy_ask.go`); anything else gets `404`
 and no certificate is issued. So each preview gets its own certificate on
 first visit, and only live previews can get one.
 
 ## Single-writer rule for the local store
 
-The local store is one JSON file guarded by an in-process mutex plus an
-exclusive non-blocking flock on `<data-dir>/yodead.lock` (FD held for the
-Store lifetime; `Server.Close` calls `Store.Close` to release it) with
-atomic save-rename and backup rotation to `db.json.bak`. Run exactly one
+The local store is two JSON files (`db.json`, `presets.json`) guarded by an
+in-process mutex plus an exclusive non-blocking flock on
+`<data-dir>/yodead.lock` (FD held for the Store lifetime; `Server.Close`
+calls `Store.Close` to release it) with atomic save-rename and backup
+rotation to `db.json.bak` and `presets.json.bak`. Run exactly one
 `yodead` writer per DataDir: a second process opening the same dir gets a
 single-writer refusal, and sequential in-process restarts must `Close`
 before reopening. Crashed deploy leftovers (`sites/.stage-*`, `sites/.old-*`)
 are removed on startup by `sites.CleanupLeftovers` (never the live dest).
 The multi-writer path is `YODEA_STORE=supabase`, where PostgREST plus RLS own
-concurrency (schema in `supabase/migrations/0001_yodea_mvp.sql`).
+concurrency (schema in `supabase/migrations/`).

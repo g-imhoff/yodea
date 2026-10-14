@@ -99,6 +99,34 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfigAllowInsecureDevPublic(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		args []string
+		env  string
+		want bool
+	}{
+		{"default off", nil, "", false},
+		{"env 1", nil, "1", true},
+		{"env is only 1", nil, "true", false},
+		{"flag", []string{"--allow-insecure-dev-public"}, "", true},
+		{"flag beats env", []string{"--allow-insecure-dev-public=false"}, "1", false},
+	}
+	for _, tc := range cases {
+		args := append([]string{"yodead", "--data-dir", "/data", "--domain", "previews.example.com"}, tc.args...)
+		env := map[string]string{"YODEA_ALLOW_INSECURE_DEV_PUBLIC": tc.env}
+		got, err := loadConfig(args, func(k string) string { return env[k] }, io.Discard)
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if got.AllowInsecureDevPublic != tc.want {
+			t.Errorf("%s: AllowInsecureDevPublic = %v, want %v", tc.name, got.AllowInsecureDevPublic, tc.want)
+		}
+	}
+}
+
 func TestLoadConfigErrors(t *testing.T) {
 	t.Parallel()
 	noEnv := func(string) string { return "" }

@@ -53,14 +53,14 @@ yodead --dev --addr 127.0.0.1:8093 --data-dir ./data --domain previews.example.t
 
 `--dev` uses synthetic per-viewer tokens and the local file store; never use
 it in production. Production uses `YODEA_STORE=supabase` with `SUPABASE_URL`
-plus a server-side key, schema in `supabase/migrations/0001_yodea_mvp.sql`.
+plus a server-side key, schema in `supabase/migrations/` (apply every file in order).
 
 ## Layout
 
 - `cmd/yodea` — the CLI entry point
 - `cmd/yodead` — the server
 - `internal/cli` — the CLI commands (`login init push list delete`), one file each, plus help
-- `internal/server` — HTTP backend (dashboard, previews, views, favorites)
+- `internal/server` — HTTP backend (dashboard, previews, views, favorites, presets)
 - `internal/client` — CLI backend (session, deploy packing, React TS checks)
 - `internal/sites` — archive validation and preview labels
 - `internal/store` — local file store plus Supabase PostgREST store

@@ -10,6 +10,9 @@ import (
 )
 
 func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return
@@ -28,6 +31,9 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 
 // handleSite routes POST .../deploy and DELETE .../{project}.
 func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	rest := strings.TrimPrefix(r.URL.Path, "/api/sites/")
 	parts := strings.SplitN(rest, "/", 2)
 	project := parts[0]

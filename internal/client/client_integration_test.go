@@ -18,7 +18,8 @@ const integrationBaseDomain = "previews.example.test"
 // server handler (DevNoAuth) with the real CLI client over a loopback
 // httptest server: login -> push -> list -> preview-fetch -> delete.
 // Preview fetches override req.Host because the server routes previews by
-// subdomain; API calls use the httptest URL directly.
+// subdomain; API calls go to the httptest URL with the central Host header
+// (centralHostTransport), as Caddy forwards it in production.
 func TestClientServerIntegrationLoginPushListPreviewDelete(t *testing.T) {
 	isolateSession(t)
 
@@ -35,6 +36,7 @@ func TestClientServerIntegrationLoginPushListPreviewDelete(t *testing.T) {
 	defer ts.Close()
 
 	c := New(ts.URL, "")
+	c.HTTP.Transport = centralHostTransport{host: integrationBaseDomain}
 	if err := c.Login("alice@example.com", "x", os.Getenv); err != nil {
 		t.Fatalf("login: %v", err)
 	}
@@ -110,4 +112,14 @@ func TestClientServerIntegrationLoginPushListPreviewDelete(t *testing.T) {
 	if err := c.Delete("blog"); err == nil || !strings.Contains(err.Error(), "no such project") {
 		t.Fatalf("second delete = %v, want no-such-project error", err)
 	}
+}
+
+type centralHostTransport struct{ host string }
+
+func (t centralHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Host == "" || req.Host == req.URL.Host {
+		req = req.Clone(req.Context())
+		req.Host = t.host
+	}
+	return http.DefaultTransport.RoundTrip(req)
 }

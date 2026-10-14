@@ -10,15 +10,20 @@
 // Sandbox model: uploaded code is static data only and is never executed by
 // this server. Preview reads deny dot segments and traversal before touching
 // disk, send nosniff plus conservative MIME types, sandbox allow-scripts
-// (no allow-same-origin) plus X-Frame-Options DENY so sibling previews under
-// the shared parent domain stay opaque and unframeable, and fall back to
-// index.html only for extensionless navigations so missing assets stay
-// visible 404s. Session cookies are HttpOnly plus SameSite=Lax so preview
-// JavaScript cannot read them.
+// allow-same-origin plus X-Frame-Options DENY so previews stay unframeable,
+// and fall back to index.html only for extensionless navigations so missing
+// assets stay visible 404s. Previews keep their own origin
+// (<label>.<BaseDomain>), so preview JavaScript runs same-origin with its
+// own host. The central API stays out of reach: session cookies are
+// HttpOnly plus SameSite=Lax so preview JavaScript cannot read them,
+// cookie-authed /api/* writes need the CSRF synchronizer token, and the
+// /api/* session and data endpoints answer only on the central host
+// (requireCentralHost).
 //
 // Run-safe note: production runs this binary as an unprivileged user with a
 // data-only writable sites directory (DataDir/sites); metadata is
-// DataDir/db.json (0600) or Supabase when YODEA_STORE=supabase.
+// DataDir/db.json plus DataDir/presets.json (0600) or Supabase when
+// YODEA_STORE=supabase.
 package server
 
 import (
@@ -28,6 +33,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +56,8 @@ type Config struct {
 	StoreBackend  string // "local" (default) or "supabase"
 	DevNoAuth     bool
 	SecureCookies bool
+
+	AllowInsecureDevPublic bool
 }
 
 // Server serves the API, the dashboard, and the preview subdomains.
@@ -79,8 +87,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	// Production guard: DevNoAuth accepts forged `dev` / `dev:<id>`
 	// tokens, so refuse to start unless the bind is loopback AND the
-	// domain is a test/local name. Lives in New so all binaries share it.
-	if cfg.DevNoAuth {
+	// domain is a test/local name, or AllowInsecureDevPublic is set.
+	// Lives in New so all binaries share it.
+	if cfg.DevNoAuth && cfg.AllowInsecureDevPublic {
+		log.Printf("WARNING: INSECURE: dev mode on public domain %q (bind %s) via --allow-insecure-dev-public: dev tokens (dev, dev:<id>) are forgeable, anyone who can reach this server can act as any user", cfg.BaseDomain, cfg.Addr)
+	} else if cfg.DevNoAuth {
 		if !isLoopbackBind(cfg.Addr) {
 			return nil, fmt.Errorf("dev mode refused: bind address %q is not loopback (must bind 127.0.0.1, ::1, or localhost)", cfg.Addr)
 		}
@@ -141,8 +152,22 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// Handler exposes the mux for tests.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler exposes the root handler Run serves, for tests.
+func (s *Server) Handler() http.Handler { return s }
+
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if cookieCount(r, "yodea_session") > 1 {
+		s.expireTossedCookies(w, r, "yodea_session", true, true)
+	}
+	if cookieCount(r, "yodea_refresh") > 1 {
+		s.expireTossedCookies(w, r, "yodea_refresh", false, false)
+	}
+	if label, ok := s.previewLabel(r.Host); ok && (isPreviewAPIPath(r.URL.Path) || isPreviewAPIPath(path.Clean(r.URL.Path))) {
+		s.handlePreviewAPI(w, r, label)
+		return
+	}
+	s.mux.ServeHTTP(w, r)
+}
 
 // Close stops background refresh loops and releases the metadata store's
 // single-writer lock so the same DataDir can be reopened in-process.
@@ -180,7 +205,7 @@ func (s *Server) routes() {
 func (s *Server) Run() error {
 	srv := &http.Server{
 		Addr:         s.cfg.Addr,
-		Handler:      s.mux,
+		Handler:      s,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 60 * time.Second,
 	}

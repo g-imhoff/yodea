@@ -11,6 +11,9 @@ import (
 )
 
 func (s *Server) handleViews(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return
@@ -35,6 +38,9 @@ type favoriteRow struct {
 }
 
 func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	token, userID, err := s.tokenFor(r)
 	if err != nil {
 		writeErr(w, "login_required", "login required")
@@ -95,6 +101,9 @@ func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFavorite(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodDelete {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return

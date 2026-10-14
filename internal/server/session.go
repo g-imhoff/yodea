@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"strings"
 
@@ -42,7 +43,69 @@ func (s *Server) setSessionCookies(w http.ResponseWriter, access string, accessT
 	}
 }
 
+func cookieCount(r *http.Request, name string) int {
+	n := 0
+	for _, c := range r.Cookies() {
+		if c.Name == name {
+			n++
+		}
+	}
+	return n
+}
+
+const maxExpiredCookiePaths = 32
+
+func (s *Server) expireTossedCookies(w http.ResponseWriter, r *http.Request, name string, keepBaseRoot, hostOnly bool) {
+	domains := []string{s.cfg.BaseDomain}
+	if net.ParseIP(s.cfg.BaseDomain) == nil {
+		for d := s.cfg.BaseDomain; ; {
+			_, parent, ok := strings.Cut(d, ".")
+			if !ok || !strings.Contains(parent, ".") {
+				break
+			}
+			domains = append(domains, parent)
+			d = parent
+		}
+	}
+	escaped := r.URL.EscapedPath()
+	paths := []string{"/"}
+	if strings.HasPrefix(escaped, "/") {
+		for i := 1; i < len(escaped) && len(paths) < maxExpiredCookiePaths; i++ {
+			if escaped[i] == '/' {
+				paths = append(paths, escaped[:i], escaped[:i+1])
+			}
+		}
+		if len(paths) < maxExpiredCookiePaths && !strings.HasSuffix(escaped, "/") {
+			paths = append(paths, escaped)
+		}
+	}
+	if hostOnly {
+		domains = append(domains, "")
+	}
+	host, _ := normalizeHost(r.Host)
+	for _, domain := range domains {
+		for _, p := range paths {
+			if keepBaseRoot && p == "/" && (domain == s.cfg.BaseDomain || (domain == "" && host == s.cfg.BaseDomain)) {
+				continue
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:     name,
+				Value:    "",
+				Path:     p,
+				Domain:   domain,
+				MaxAge:   -1,
+				HttpOnly: true,
+				Secure:   s.cfg.SecureCookies,
+				SameSite: http.SameSiteLaxMode,
+			})
+		}
+	}
+}
+
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return
@@ -81,6 +144,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return
@@ -89,6 +155,10 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 	// preview page cannot force session rotation with ambient cookies.
 	// Bearer-only calls with no session cookie stay exempt.
 	if !s.checkCSRF(w, r, "") {
+		return
+	}
+	if cookieCount(r, "yodea_refresh") > 1 {
+		writeErr(w, "login_required", "login required")
 		return
 	}
 	refresh := ""
@@ -139,6 +209,9 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.requireCentralHost(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		writeErr(w, "method_not_allowed", "method not allowed")
 		return

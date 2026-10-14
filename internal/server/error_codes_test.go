@@ -142,6 +142,7 @@ func TestErrorCodeStatusTable(t *testing.T) {
 		"bad_project":         http.StatusBadRequest,
 		"rejected_upload":     http.StatusBadRequest,
 		"label_taken":         http.StatusConflict,
+		"preset_limit":        http.StatusConflict,
 		"unknown_site":        http.StatusNotFound,
 		"no_such_project":     http.StatusNotFound,
 		"no_such_favorite":    http.StatusNotFound,

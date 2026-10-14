@@ -1,10 +1,11 @@
 // Package store is yodead's Go data access for preview metadata: deployed
-// sites, per-viewer visit history, and per-viewer favorites.
+// sites, per-viewer visit history, per-viewer favorites, and per-viewer
+// preview presets.
 //
 // Store choice (documented per brief): the MVP runs on the local
 // file-backed Store below, whose row model mirrors the Supabase schema in
-// supabase/migrations/0001_yodea_mvp.sql one to one (sites, site_views,
-// favorites). Set YODEA_STORE=supabase with SUPABASE_URL plus a server-side
+// supabase/migrations/ one to one (sites, site_views, favorites, presets).
+// Set YODEA_STORE=supabase with SUPABASE_URL plus a server-side
 // key to use SupabaseStore (PostgREST) instead; DevNoAuth and all tests use
 // the local store so nothing needs live Supabase. Personal-rows-only
 // isolation is enforced in Go here and by RLS policies there; preview reads
@@ -12,6 +13,7 @@
 package store
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +56,20 @@ type Favorite struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+const PresetLimit = 100
+
+const PresetDataMax = 16384
+
+var ErrPresetLimit = errors.New("preset limit reached")
+
+type Preset struct {
+	UserID    string          `json:"user_id"`
+	Label     string          `json:"label"`
+	Name      string          `json:"name"`
+	Data      json.RawMessage `json:"data"`
+	UpdatedAt time.Time       `json:"updated_at"`
+}
+
 // Storage is the metadata backend contract both Store and SupabaseStore
 // satisfy. token is the caller's Supabase JWT (empty in DevNoAuth); the
 // local Store ignores it, SupabaseStore forwards it so PostgREST RLS sees
@@ -68,6 +84,9 @@ type Storage interface {
 	ListFavorites(token, userID string) []Favorite
 	AddFavorite(token, userID, label string) error
 	RemoveFavorite(token, userID, label string) (bool, error)
+	ListPresets(token, userID, label string) ([]Preset, error)
+	PutPreset(token string, p Preset) (Preset, error)
+	DeletePreset(token, userID, label, name string) (bool, error)
 	// Probe reports whether the backend is reachable. Local always answers
 	// from memory; Supabase performs one small system-keyed read.
 	Probe() error
@@ -77,6 +96,10 @@ type data struct {
 	Sites     map[string]*Site      `json:"sites"`     // key: label
 	Views     map[string][]View     `json:"views"`     // key: user ID
 	Favorites map[string][]Favorite `json:"favorites"` // key: user ID
+}
+
+type presetData struct {
+	Presets map[string][]Preset `json:"presets"`
 }
 
 // Store is a small JSON metadata store. It fits the 10-user MVP and keeps
@@ -93,32 +116,35 @@ type data struct {
 // never silently discards a good on-disk state) and save fsyncs the temp
 // file plus the directory for durability.
 type Store struct {
-	dir      string
-	path     string
-	bakPath  string
-	lockPath string
-	mu       sync.Mutex
-	d        data
-	lockFile *os.File
+	dir            string
+	path           string
+	bakPath        string
+	presetsPath    string
+	presetsBakPath string
+	lockPath       string
+	mu             sync.Mutex
+	d              data
+	p              presetData
+	lockFile       *os.File
 }
 
-// Open loads or creates the store at dir/db.json. It takes the single-writer
-// flock on dir/yodead.lock; a second process opening the same dir gets an
-// error. When the primary db.json is corrupt or missing, Open boots from
-// db.json.bak when that copy parses, logging which file was used.
+// Open loads or creates the store at dir/db.json plus dir/presets.json. It
+// takes the single-writer flock on dir/yodead.lock; a second process opening
+// the same dir gets an error. When a primary file is corrupt or missing, Open
+// boots from its .bak copy when that copy parses, logging which file was used.
 func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	s := &Store{
-		dir:      dir,
-		path:     filepath.Join(dir, "db.json"),
-		bakPath:  filepath.Join(dir, "db.json.bak"),
-		lockPath: filepath.Join(dir, "yodead.lock"),
+		dir:            dir,
+		path:           filepath.Join(dir, "db.json"),
+		bakPath:        filepath.Join(dir, "db.json.bak"),
+		presetsPath:    filepath.Join(dir, "presets.json"),
+		presetsBakPath: filepath.Join(dir, "presets.json.bak"),
+		lockPath:       filepath.Join(dir, "yodead.lock"),
 	}
-	s.d.Sites = map[string]*Site{}
-	s.d.Views = map[string][]View{}
-	s.d.Favorites = map[string][]Favorite{}
+	s.ensureMaps()
 
 	lf, err := os.OpenFile(s.lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
@@ -165,64 +191,79 @@ func (s *Store) ensureMaps() {
 	if s.d.Favorites == nil {
 		s.d.Favorites = map[string][]Favorite{}
 	}
+	if s.p.Presets == nil {
+		s.p.Presets = map[string][]Preset{}
+	}
 }
 
-// loadWithFallback populates s.d from the primary file, falling back to the
-// backup when the primary is missing, empty, or corrupt. The file used is
-// logged whenever the backup is involved.
+// loadWithFallback populates s.d and s.p from their primary files, falling
+// back to each backup when its primary is missing, empty, or corrupt. The
+// file used is logged whenever a backup is involved.
 func (s *Store) loadWithFallback() error {
-	buf, err := os.ReadFile(s.path)
-	if errors.Is(err, os.ErrNotExist) {
-		bak, berr := os.ReadFile(s.bakPath)
-		if berr == nil && len(bak) > 0 {
-			var bd data
-			if jerr := json.Unmarshal(bak, &bd); jerr == nil {
-				log.Printf("store: primary %s missing, using backup %s", s.path, s.bakPath)
-				s.d = bd
-				s.ensureMaps()
-				return nil
-			}
-		}
-		return nil
-	}
+	d, err := bootState(s.path, s.bakPath, func(d *data) bool {
+		return len(d.Sites) > 0 || len(d.Views) > 0 || len(d.Favorites) > 0
+	})
 	if err != nil {
 		return err
 	}
-	if len(buf) == 0 {
-		bak, berr := os.ReadFile(s.bakPath)
-		if berr == nil && len(bak) > 0 {
-			var bd data
-			if jerr := json.Unmarshal(bak, &bd); jerr == nil {
-				hasRows := len(bd.Sites) > 0 || len(bd.Views) > 0 || len(bd.Favorites) > 0
-				if hasRows {
-					log.Printf("store: primary %s empty, using backup %s", s.path, s.bakPath)
-					s.d = bd
-					s.ensureMaps()
-					return nil
-				}
-			}
-		}
-		return nil
+	p, err := bootState(s.presetsPath, s.presetsBakPath, func(p *presetData) bool {
+		return len(p.Presets) > 0
+	})
+	if err != nil {
+		return err
 	}
-	var dd data
-	if err := json.Unmarshal(buf, &dd); err != nil {
-		log.Printf("store: primary %s corrupt (%v), trying backup %s", s.path, err, s.bakPath)
-		bak, berr := os.ReadFile(s.bakPath)
-		if berr != nil {
-			return fmt.Errorf("store %s corrupt: %w (no backup)", s.path, err)
-		}
-		var bd data
-		if err2 := json.Unmarshal(bak, &bd); err2 != nil {
-			return fmt.Errorf("store %s corrupt (%v) and backup %s corrupt (%v)", s.path, err, s.bakPath, err2)
-		}
-		log.Printf("store: using backup %s", s.bakPath)
-		s.d = bd
-		s.ensureMaps()
-		return nil
+	if d != nil {
+		s.d = *d
 	}
-	s.d = dd
+	if p != nil {
+		s.p = *p
+	}
 	s.ensureMaps()
 	return nil
+}
+
+func bootState[T any](path, bakPath string, hasRows func(*T) bool) (*T, error) {
+	buf, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		bak, berr := os.ReadFile(bakPath)
+		if berr == nil && len(bak) > 0 {
+			bd := new(T)
+			if jerr := json.Unmarshal(bak, bd); jerr == nil {
+				log.Printf("store: primary %s missing, using backup %s", path, bakPath)
+				return bd, nil
+			}
+		}
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(buf) == 0 {
+		bak, berr := os.ReadFile(bakPath)
+		if berr == nil && len(bak) > 0 {
+			bd := new(T)
+			if jerr := json.Unmarshal(bak, bd); jerr == nil && hasRows(bd) {
+				log.Printf("store: primary %s empty, using backup %s", path, bakPath)
+				return bd, nil
+			}
+		}
+		return nil, nil
+	}
+	dd := new(T)
+	if err := json.Unmarshal(buf, dd); err != nil {
+		log.Printf("store: primary %s corrupt (%v), trying backup %s", path, err, bakPath)
+		bak, berr := os.ReadFile(bakPath)
+		if berr != nil {
+			return nil, fmt.Errorf("store %s corrupt: %w (no backup)", path, err)
+		}
+		bd := new(T)
+		if err2 := json.Unmarshal(bak, bd); err2 != nil {
+			return nil, fmt.Errorf("store %s corrupt (%v) and backup %s corrupt (%v)", path, err, bakPath, err2)
+		}
+		log.Printf("store: using backup %s", bakPath)
+		return bd, nil
+	}
+	return dd, nil
 }
 
 // reloadLocked re-reads the on-disk state into memory. Callers must hold
@@ -230,40 +271,59 @@ func (s *Store) loadWithFallback() error {
 // the backup when the primary is corrupt, so a save never blindly
 // overwrites good disk state with stale memory.
 func (s *Store) reloadLocked() error {
-	buf, err := os.ReadFile(s.path)
+	d, err := reloadState[data](s.path, s.bakPath)
+	if err != nil {
+		return err
+	}
+	if d != nil {
+		s.d = *d
+		s.ensureMaps()
+	}
+	return nil
+}
+
+func (s *Store) reloadPresetsLocked() error {
+	p, err := reloadState[presetData](s.presetsPath, s.presetsBakPath)
+	if err != nil {
+		return err
+	}
+	if p != nil {
+		s.p = *p
+		s.ensureMaps()
+	}
+	return nil
+}
+
+func reloadState[T any](path, bakPath string) (*T, error) {
+	buf, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			if bak, berr := os.ReadFile(s.bakPath); berr == nil && len(bak) > 0 {
-				var bd data
-				if jerr := json.Unmarshal(bak, &bd); jerr == nil {
-					s.d = bd
-					s.ensureMaps()
+			if bak, berr := os.ReadFile(bakPath); berr == nil && len(bak) > 0 {
+				bd := new(T)
+				if jerr := json.Unmarshal(bak, bd); jerr == nil {
+					return bd, nil
 				}
 			}
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	if len(buf) == 0 {
-		return nil
+		return nil, nil
 	}
-	var nd data
-	if err := json.Unmarshal(buf, &nd); err != nil {
-		bak, berr := os.ReadFile(s.bakPath)
+	nd := new(T)
+	if err := json.Unmarshal(buf, nd); err != nil {
+		bak, berr := os.ReadFile(bakPath)
 		if berr == nil {
-			var bd data
-			if jerr := json.Unmarshal(bak, &bd); jerr == nil {
-				log.Printf("store: primary %s corrupt (%v), using backup %s", s.path, err, s.bakPath)
-				s.d = bd
-				s.ensureMaps()
-				return nil
+			bd := new(T)
+			if jerr := json.Unmarshal(bak, bd); jerr == nil {
+				log.Printf("store: primary %s corrupt (%v), using backup %s", path, err, bakPath)
+				return bd, nil
 			}
 		}
-		return err
+		return nil, err
 	}
-	s.d = nd
-	s.ensureMaps()
-	return nil
+	return nd, nil
 }
 
 func fsyncDir(dir string) {
@@ -275,16 +335,31 @@ func fsyncDir(dir string) {
 	_ = df.Close()
 }
 
-// save writes the store atomically: previous good primary is rotated to
-// db.json.bak (only when it parses, so a corrupt primary never destroys a
-// good backup), the new payload goes to db.json.tmp with an fsync, then is
-// renamed over db.json followed by a directory fsync. Callers must hold s.mu.
 func (s *Store) save() error {
 	buf, err := json.MarshalIndent(s.d, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
+	return writeState[data](s.dir, s.path, s.bakPath, buf)
+}
+
+func (s *Store) savePresets() error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(s.p); err != nil {
+		return err
+	}
+	return writeState[presetData](s.dir, s.presetsPath, s.presetsBakPath, buf.Bytes())
+}
+
+// writeState writes one store file atomically: previous good primary is
+// rotated to its .bak (only when it parses, so a corrupt primary never
+// destroys a good backup), the new payload goes to <path>.tmp with an fsync,
+// then is renamed over the primary followed by a directory fsync. Callers
+// must hold s.mu.
+func writeState[T any](dir, path, bakPath string, buf []byte) error {
+	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
@@ -304,17 +379,17 @@ func (s *Store) save() error {
 		return err
 	}
 	// Rotate the previous good copy aside before overwriting.
-	if prev, err := os.ReadFile(s.path); err == nil && len(prev) > 0 {
-		var probe data
+	if prev, err := os.ReadFile(path); err == nil && len(prev) > 0 {
+		var probe T
 		if json.Unmarshal(prev, &probe) == nil {
-			bakTmp := s.bakPath + ".tmp"
+			bakTmp := bakPath + ".tmp"
 			bf, berr := os.OpenFile(bakTmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 			if berr == nil {
 				_, werr := bf.Write(prev)
 				serr := bf.Sync()
 				cerr := bf.Close()
 				if werr == nil && serr == nil && cerr == nil {
-					if rerr := os.Rename(bakTmp, s.bakPath); rerr != nil {
+					if rerr := os.Rename(bakTmp, bakPath); rerr != nil {
 						_ = os.Remove(bakTmp)
 					}
 				} else {
@@ -324,11 +399,11 @@ func (s *Store) save() error {
 			}
 		}
 	}
-	if err := os.Rename(tmp, s.path); err != nil {
+	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	fsyncDir(s.dir)
+	fsyncDir(dir)
 	return nil
 }
 
@@ -553,6 +628,99 @@ func (s *Store) RemoveFavorite(_, userID, label string) (bool, error) {
 		if f.Label == label {
 			s.d.Favorites[userID] = append(favs[:i], favs[i+1:]...)
 			if err := s.save(); err != nil {
+				return false, err
+			}
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func copyPreset(p Preset) Preset {
+	var b bytes.Buffer
+	if err := json.Compact(&b, p.Data); err == nil {
+		p.Data = b.Bytes()
+	} else {
+		p.Data = append(json.RawMessage(nil), p.Data...)
+	}
+	return p
+}
+
+func checkPreset(p Preset) error {
+	if p.UserID == "" || p.Label == "" || p.Name == "" {
+		return errors.New("user, label, and name are required")
+	}
+	if !json.Valid(p.Data) {
+		return errors.New("preset data must be valid JSON")
+	}
+	return nil
+}
+
+func (s *Store) ListPresets(_, userID, label string) ([]Preset, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Preset{}
+	for _, p := range s.p.Presets[userID] {
+		if p.Label == label {
+			out = append(out, copyPreset(p))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (s *Store) PutPreset(_ string, p Preset) (Preset, error) {
+	if err := checkPreset(p); err != nil {
+		return Preset{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadPresetsLocked(); err != nil {
+		return Preset{}, err
+	}
+	p = copyPreset(p)
+	p.UpdatedAt = time.Now().UTC()
+	list := s.p.Presets[p.UserID]
+	count := 0
+	for i, cur := range list {
+		if cur.Label != p.Label {
+			continue
+		}
+		if cur.Name == p.Name {
+			list[i] = p
+			if err := s.savePresets(); err != nil {
+				return Preset{}, err
+			}
+			return copyPreset(p), nil
+		}
+		count++
+	}
+	if count >= PresetLimit {
+		return Preset{}, ErrPresetLimit
+	}
+	s.p.Presets[p.UserID] = append(list, p)
+	if err := s.savePresets(); err != nil {
+		return Preset{}, err
+	}
+	return copyPreset(p), nil
+}
+
+func (s *Store) DeletePreset(_, userID, label, name string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadPresetsLocked(); err != nil {
+		return false, err
+	}
+	list := s.p.Presets[userID]
+	for i, p := range list {
+		if p.Label == label && p.Name == name {
+			list = append(list[:i], list[i+1:]...)
+			if len(list) == 0 {
+				delete(s.p.Presets, userID)
+			} else {
+				s.p.Presets[userID] = list
+			}
+			if err := s.savePresets(); err != nil {
 				return false, err
 			}
 			return true, nil

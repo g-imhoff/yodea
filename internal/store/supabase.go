@@ -5,7 +5,7 @@
 // it is only ever an apikey header plus, for the explicit system context,
 // an Authorization header on these back-channel calls, never a cookie,
 // never a response body, never a client path. Row tables and RLS policies
-// live in supabase/migrations/0001_yodea_mvp.sql; every data request below
+// live in supabase/migrations/; every data request below
 // carries the viewer's JWT as Authorization so RLS sees the caller.
 //
 // Behavior change: data calls no longer fall back to the server key when
@@ -46,11 +46,12 @@ import (
 	"time"
 )
 
-// Supabase tables. Keep in sync with supabase/migrations/0001_yodea_mvp.sql.
+// Supabase tables. Keep in sync with supabase/migrations/.
 const (
 	tableSites     = "sites"
 	tableSiteViews = "site_views"
 	tableFavorites = "favorites"
+	tablePresets   = "presets"
 )
 
 // viewTrimLimit bounds one trim listing so concurrent traffic cannot grow
@@ -173,19 +174,34 @@ func (s *SupabaseStore) systemReq(method, table, query string, body any) (*http.
 	return req, nil
 }
 
+const responseMax = 1 << 20
+
+const presetListMax = PresetLimit * (2*PresetDataMax + 1024)
+
 func (s *SupabaseStore) do(req *http.Request, out any) error {
+	return s.doLimit(req, out, responseMax)
+}
+
+func (s *SupabaseStore) doLimit(req *http.Request, out any, limit int64) error {
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
-	buf, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	buf, _ := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	over := int64(len(buf)) > limit
+	if over {
+		buf = buf[:limit]
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("supabase %s %s: HTTP %d: %s",
 			req.Method, req.URL.Path, resp.StatusCode, strings.TrimSpace(string(buf)))
 	}
 	if out == nil || len(bytes.TrimSpace(buf)) == 0 {
 		return nil
+	}
+	if over {
+		return fmt.Errorf("supabase %s %s: response exceeds %d bytes", req.Method, req.URL.Path, limit)
 	}
 	return json.Unmarshal(buf, out)
 }
@@ -587,4 +603,118 @@ func (s *SupabaseStore) RemoveFavorite(token, userID, label string) (bool, error
 		return false, nil
 	}
 	return true, nil
+}
+
+func presetQuery(userID, label string) url.Values {
+	v := url.Values{}
+	v.Set("user_id", "eq."+userID)
+	v.Set("label", "eq."+label)
+	return v
+}
+
+func (s *SupabaseStore) ListPresets(token, userID, label string) ([]Preset, error) {
+	if err := requireCallerToken(token); err != nil {
+		return nil, err
+	}
+	v := presetQuery(userID, label)
+	v.Set("select", "name,data,updated_at")
+	v.Set("order", "name.asc")
+	req, err := s.req(http.MethodGet, tablePresets, q(v), token, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := []Preset{}
+	if err := s.doLimit(req, &out, presetListMax); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []Preset{}
+	}
+	for i := range out {
+		out[i].UserID, out[i].Label = userID, label
+	}
+	return out, nil
+}
+
+func (s *SupabaseStore) presetNames(token string, v url.Values) ([]string, error) {
+	v.Set("select", "name")
+	req, err := s.req(http.MethodGet, tablePresets, q(v), token, nil)
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		Name string `json:"name"`
+	}
+	if err := s.do(req, &rows); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	return names, nil
+}
+
+func (s *SupabaseStore) PutPreset(token string, p Preset) (Preset, error) {
+	if err := requireCallerToken(token); err != nil {
+		return Preset{}, err
+	}
+	if err := checkPreset(p); err != nil {
+		return Preset{}, err
+	}
+	ev := presetQuery(p.UserID, p.Label)
+	ev.Set("name", "eq."+p.Name)
+	existing, err := s.presetNames(token, ev)
+	if err != nil {
+		return Preset{}, err
+	}
+	if len(existing) == 0 {
+		cv := presetQuery(p.UserID, p.Label)
+		cv.Set("limit", fmt.Sprint(PresetLimit))
+		names, err := s.presetNames(token, cv)
+		if err != nil {
+			return Preset{}, err
+		}
+		if len(names) >= PresetLimit {
+			return Preset{}, ErrPresetLimit
+		}
+	}
+	body := map[string]any{
+		"user_id":    p.UserID,
+		"label":      p.Label,
+		"name":       p.Name,
+		"data":       p.Data,
+		"updated_at": time.Now().UTC(),
+	}
+	req, err := s.req(http.MethodPost, tablePresets, "on_conflict=user_id,label,name", token, body)
+	if err != nil {
+		return Preset{}, err
+	}
+	req.Header.Set("Prefer", "resolution=merge-duplicates,return=representation")
+	var out []Preset
+	if err := s.do(req, &out); err != nil {
+		return Preset{}, err
+	}
+	if len(out) == 0 {
+		return Preset{}, fmt.Errorf("supabase preset upsert returned no rows")
+	}
+	return out[0], nil
+}
+
+func (s *SupabaseStore) DeletePreset(token, userID, label, name string) (bool, error) {
+	if err := requireCallerToken(token); err != nil {
+		return false, err
+	}
+	v := presetQuery(userID, label)
+	v.Set("name", "eq."+name)
+	req, err := s.req(http.MethodDelete, tablePresets, q(v), token, nil)
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Prefer", "return=representation")
+	var out []Preset
+	if err := s.do(req, &out); err != nil {
+		return false, err
+	}
+	return len(out) > 0, nil
 }

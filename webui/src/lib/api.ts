@@ -182,7 +182,7 @@ export function removeFavorite(label: string): Promise<{ status: string }> {
 
 /**
  * Mirror of the server's safe next-URL allowlist (safeNext in
- * internal/server/server.go): a relative central path with a single leading
+ * internal/server/ui.go): a relative central path with a single leading
  * slash, or an https URL on the central host itself. Preview-subdomain and
  * any other absolute targets fall back to "/": the server strips those
  * ?next= values to bare /login, so honoring them here would disagree with
